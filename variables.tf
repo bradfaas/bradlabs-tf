@@ -13,6 +13,18 @@ variable "windows_admin_password" {
   sensitive = true
 }
 
+# Create a domain user whose name == var.user_id (toggleable)
+variable "create_domain_user" {
+  type    = bool
+  default = true
+}
+
+# Password for that domain user (required if create_domain_user = true)
+variable "domain_user_password" {
+  type      = string
+  sensitive = true
+}
+
 variable "linux_user_password" {
   type      = string
   sensitive = true
