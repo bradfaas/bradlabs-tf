@@ -22,11 +22,14 @@ locals {
   })
 
   win_admin_pw = coalesce(var.windows_admin_password, var.domain_admin_password)
+
+  # Split /24 into /28s for small public/private subnets
+  public_subnet_cidr  = cidrsubnet(var.vpc_cidr, 4, 0) # e.g., .0/28
+  private_subnet_cidr = cidrsubnet(var.vpc_cidr, 4, 1) # e.g., .16/28
 }
 
-
 # ------------------------
-# Networking (private-only)
+# Networking
 # ------------------------
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
@@ -36,13 +39,6 @@ resource "aws_vpc" "this" {
 }
 
 data "aws_availability_zones" "available" {}
-
-# ---------- Subnets: 1x public (/28) + 1x private (/28) ----------
-# Split the /24 into /28s; index 0 = public, index 1 = private
-locals {
-  public_subnet_cidr  = cidrsubnet(var.vpc_cidr, 4, 0) # e.g., 172.16.73.0/28
-  private_subnet_cidr = cidrsubnet(var.vpc_cidr, 4, 1) # e.g., 172.16.73.16/28
-}
 
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
@@ -60,7 +56,7 @@ resource "aws_subnet" "private" {
   tags = merge(local.base_tags, { Name = "lab-${var.lab_id}-private" })
 }
 
-# ---------- IGW + NAT (behind a flag) ----------
+# IGW + NAT (egress)
 resource "aws_internet_gateway" "this" {
   count = var.enable_nat ? 1 : 0
   vpc_id = aws_vpc.this.id
@@ -68,7 +64,7 @@ resource "aws_internet_gateway" "this" {
 }
 
 resource "aws_eip" "nat" {
-  count = var.enable_nat ? 1 : 0
+  count  = var.enable_nat ? 1 : 0
   domain = "vpc"
   tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-nat-eip" })
 }
@@ -78,10 +74,10 @@ resource "aws_nat_gateway" "this" {
   allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public.id
   tags          = merge(local.base_tags, { Name = "lab-${var.lab_id}-nat" })
-  depends_on    = [aws_internet_gateway.this] # ensure IGW exists first
+  depends_on    = [aws_internet_gateway.this]
 }
 
-# ---------- Route tables ----------
+# Route tables
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.this.id
   tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-rt-public" })
@@ -116,33 +112,45 @@ resource "aws_route_table_association" "private" {
   route_table_id = aws_route_table.private.id
 }
 
-# SG for instances: allow intra-SG all traffic (AD chatter), no inbound from outside
+# Security group for instances
 resource "aws_security_group" "instances" {
   name        = "lab-${var.lab_id}-instances"
-  description = "Instances intra-traffic & egress"
+  description = "Instances intra-traffic & egress; allow RDP from admin CIDR"
   vpc_id      = aws_vpc.this.id
 
+  # intra-SG
   ingress {
-    description = "intra-sg"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    self        = true
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
   }
+
+  # RDP/xRDP from your admin IP (NLB preserves client IP)
+  ingress {
+    description = "RDP/xRDP"
+    from_port   = 3389
+    to_port     = 3389
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
   tags = local.base_tags
 }
 
-# SG for interface endpoints (allow 443 from instances)
+# SG for Interface Endpoints (allow HTTPS from instances)
 resource "aws_security_group" "endpoints" {
   name        = "lab-${var.lab_id}-endpoints"
   description = "Allow HTTPS from lab instances to endpoints"
   vpc_id      = aws_vpc.this.id
+
   ingress {
     description     = "HTTPS from instances"
     from_port       = 443
@@ -150,28 +158,6 @@ resource "aws_security_group" "endpoints" {
     protocol        = "tcp"
     security_groups = [aws_security_group.instances.id]
   }
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  tags = local.base_tags
-}
-
-# Allow RDP inbound
-resource "aws_security_group" "rdp_public" {
-  name        = "lab-${var.lab_id}-rdp-public"
-  description = "Allow inbound RDP from allowed CIDR"
-  vpc_id      = aws_vpc.this.id
-
-  ingress {
-    description = "RDP / xrdp"
-    from_port   = 3389
-    to_port     = 3389
-    protocol    = "tcp"
-    cidr_blocks = [var.desktop_rdp_cidr]
-  }
 
   egress {
     from_port   = 0
@@ -183,7 +169,7 @@ resource "aws_security_group" "rdp_public" {
   tags = local.base_tags
 }
 
-# VPC endpoints
+# VPC Endpoints
 resource "aws_vpc_endpoint" "s3" {
   count             = var.create_s3_gateway_endpoint ? 1 : 0
   vpc_id            = aws_vpc.this.id
@@ -248,14 +234,12 @@ data "aws_ami" "ubuntu2204" {
 data "aws_iam_policy_document" "assume_ec2" {
   statement {
     actions = ["sts:AssumeRole"]
-
     principals {
       type        = "Service"
       identifiers = ["ec2.amazonaws.com"]
     }
   }
 }
-
 
 resource "aws_iam_role" "instance" {
   name               = "lab-${var.lab_id}-instance-role"
@@ -294,7 +278,7 @@ resource "aws_iam_instance_profile" "instance" {
 }
 
 # ------------------------
-# EC2 Instances
+# EC2 Instances (private subnet)
 # ------------------------
 resource "aws_instance" "dc" {
   ami                    = data.aws_ssm_parameter.win2022.value
@@ -332,26 +316,16 @@ resource "aws_instance" "linux" {
 }
 
 # ------------------------
-# Secrets as SSM Parameter (SecureString)
-# ------------------------
-resource "aws_ssm_parameter" "domain_admin_pw" {
-  name   = "/labs/${var.lab_id}/domainAdminPassword"
-  type   = "SecureString"
-  value  = var.domain_admin_password
-  tags   = local.base_tags
-}
-
-# ------------------------
 # SSM Documents
 # ------------------------
 
-# 1) Promote DC (new forest)
+# Promote DC (set admin pw, enable RDP, then promote)
 resource "aws_ssm_document" "setup_dc" {
   name          = "Lab-${var.lab_id}-SetupDC"
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Set admin password, enable RDP, and promote server to DC for ${var.domain_name}"
+    description   = "Set admin password, enable RDP, and promote to DC for ${var.domain_name}"
     parameters    = {
       AdminPassword = { type = "String" }
     }
@@ -361,14 +335,9 @@ resource "aws_ssm_document" "setup_dc" {
         name   = "PrepAndPromote"
         inputs = {
           runCommand = [
-            # Set local Administrator password (becomes Domain Admin after promotion)
             "net user Administrator '{{ AdminPassword }}'",
-  
-            # Enable RDP & firewall
             "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
             "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
-  
-            # ADDS
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "Install-WindowsFeature AD-Domain-Services",
             "Import-Module ADDSDeployment",
@@ -378,11 +347,10 @@ resource "aws_ssm_document" "setup_dc" {
       }
     ]
   })
-
   tags = local.base_tags
 }
 
-# Join Windows desktop to domain
+# Join Windows desktop to domain (also set admin pw & enable RDP)
 resource "aws_ssm_document" "join_domain_win" {
   name          = "Lab-${var.lab_id}-JoinDomainWin"
   document_type = "Command"
@@ -399,62 +367,18 @@ resource "aws_ssm_document" "join_domain_win" {
         name   = "EnableRDPAndJoin"
         inputs = {
           runCommand = [
-            # If already domain-joined, no-op
             "$p = Get-WmiObject Win32_ComputerSystem",
             "if ($p.PartOfDomain -eq $true) { Write-Host 'Already joined'; exit 0 }",
-  
-            # Set local Administrator password and enable RDP
             "net user Administrator '{{ AdminPassword }}'",
             "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
             "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
-  
-            # Point DNS to DC and wait for it
             "$adapters = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}",
             "$adapters | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @('{{ DcIp }}') }",
             "while (-not (Test-Connection -Quiet -Count 1 '{{ DcIp }}')) { Start-Sleep -Seconds 15 }",
-  
-            # Join domain with AdminPassword
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "$cred = New-Object System.Management.Automation.PSCredential('${var.domain_netbios_name}\\Administrator',$sec)",
             "Add-Computer -DomainName '${var.domain_name}' -Credential $cred -Force -ErrorAction Stop",
             "Restart-Computer -Force"
-          ]
-        }
-      }
-    ]
-  })
-
-  tags = local.base_tags
-}
-
-# Install GUI + xrdp on Linux
-resource "aws_ssm_document" "linux_gui_xrdp" {
-  name          = "Lab-${var.lab_id}-LinuxGuiXrdp"
-  document_type = "Command"
-  content = jsonencode({
-    schemaVersion = "2.2"
-    description   = "Install XFCE desktop + xrdp and set ubuntu password"
-    parameters    = {
-      UserPassword = { type = "String" }
-    }
-    mainSteps = [
-      {
-        action = "aws:runShellScript"
-        name   = "InstallGUI"
-        inputs = {
-          runCommand = [
-            "set -e",
-            "export DEBIAN_FRONTEND=noninteractive",
-            "apt-get update",
-            # lightweight desktop; you can swap for ubuntu-desktop if you prefer
-            "apt-get install -y xfce4 xorg dbus-x11 x11-xserver-utils",
-            "apt-get install -y xrdp",
-            "systemctl enable xrdp",
-            "systemctl restart xrdp",
-            # set ubuntu user's password for xrdp login
-            "echo \"ubuntu:{{ UserPassword }}\" | chpasswd",
-            # set default session for xrdp
-            "su - ubuntu -c 'echo xfce4-session > ~/.xsession'"
           ]
         }
       }
@@ -476,167 +400,4 @@ resource "aws_ssm_document" "install_apps_win" {
       App1Arg = { type = "String", default = "" }
       App2Key = { type = "String", default = "" }
       App2Arg = { type = "String", default = "" }
-      App3Key = { type = "String", default = "" }
-      App3Arg = { type = "String", default = "" }
-    }
-    mainSteps = [
-      { action = "aws:runPowerShellScript", name = "PrepDir", inputs = { runCommand = ["New-Item -ItemType Directory -Force -Path C:\\Temp\\app-installs | Out-Null"] } },
-      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
-      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
-      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
-      {
-        action = "aws:runPowerShellScript",
-        name   = "Install",
-        inputs = {
-          runCommand = [
-            "$items = Get-ChildItem 'C:\\Temp\\app-installs' | Where-Object { -not $_.PSIsContainer }",
-            "$argsMap = @{",
-            "  (Split-Path -Leaf '{{ App1Key }}') = '{{ App1Arg }}'",
-            "  (Split-Path -Leaf '{{ App2Key }}') = '{{ App2Arg }}'",
-            "  (Split-Path -Leaf '{{ App3Key }}') = '{{ App3Arg }}'",
-            "}",
-            "foreach ($f in $items) {",
-            "  $ext = [IO.Path]::GetExtension($f.FullName).ToLower()",
-            "  $a = $argsMap[$f.Name]",
-            "  if ($ext -eq '.msi') { Start-Process 'msiexec.exe' -ArgumentList @('/i', $f.FullName, '/qn', $a) -Wait -NoNewWindow }",
-            "  elseif ($ext -eq '.exe') { Start-Process $f.FullName -ArgumentList $a -Wait -NoNewWindow }",
-            "  else { Write-Host 'Skipping unsupported: ' + $f.FullName }",
-            "}"
-          ]
-        }
-      }
-    ]
-  })
-  tags = local.base_tags
-}
-
-
-# 4) Install apps on Linux
-resource "aws_ssm_document" "install_apps_linux" {
-  name          = "Lab-${var.lab_id}-InstallAppsLinux"
-  document_type = "Command"
-  content = jsonencode({
-    schemaVersion = "2.2"
-    description   = "Install up to 3 Linux apps from S3"
-    parameters    = {
-      Bucket  = { type = "String" }
-      App1Key = { type = "String", default = "" }
-      App1Arg = { type = "String", default = "" }
-      App2Key = { type = "String", default = "" }
-      App2Arg = { type = "String", default = "" }
-      App3Key = { type = "String", default = "" }
-      App3Arg = { type = "String", default = "" }
-    }
-    mainSteps = [
-      { action = "aws:runShellScript", name = "PrepDir", inputs = { runCommand = ["mkdir -p /var/tmp/app-installs"] } },
-      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "/var/tmp/app-installs" } },
-      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "/var/tmp/app-installs" } },
-      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "/var/tmp/app-installs" } },
-      {
-        action = "aws:runShellScript",
-        name   = "Install",
-        inputs = {
-          runCommand = [
-            "set -e",
-            "cd /var/tmp/app-installs || exit 0",
-            "for f in *; do",
-            "  case \"$f\" in",
-            "    *.deb) dpkg -i \"$f\" || true ;;",
-            "    *.rpm) rpm -i --nodeps \"$f\" || true ;;",
-            "    *.run|*.sh) chmod +x \"$f\" && ./\"$f\" {{ App1Arg }} {{ App2Arg }} {{ App3Arg }} || true ;;",
-            "    *) echo \"Skipping $f\" ;;",
-            "  esac",
-            "done"
-          ]
-        }
-      }
-    ]
-  })
-  tags = local.base_tags
-}
-
-# ------------------------
-# Associations
-# ------------------------
-resource "aws_ssm_association" "setup_dc" {
-  name = aws_ssm_document.setup_dc.name
-
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.dc.id]
-  }
-
-  parameters = {
-    AdminPassword = local.win_admin_pw
-  }
-
-  compliance_severity = "HIGH"
-}
-
-resource "aws_ssm_association" "join_win" {
-  name = aws_ssm_document.join_domain_win.name
-
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.win.id]
-  }
-
-  parameters = {
-    DcIp          = aws_instance.dc.private_ip
-    AdminPassword = local.win_admin_pw
-  }
-
-  compliance_severity = "HIGH"
-}
-
-resource "aws_ssm_association" "linux_gui_xrdp" {
-  name = aws_ssm_document.linux_gui_xrdp.name
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.linux.id]
-  }
-  parameters = {
-    UserPassword = var.linux_user_password
-  }
-  compliance_severity = "MEDIUM"
-}
-
-resource "aws_ssm_association" "install_win" {
-  name = aws_ssm_document.install_apps_win.name
-
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.win.id]
-  }
-
-  parameters = {
-    Bucket = var.s3_app_bucket
-    App1Key = local.win_apps[0].s3_key
-    App1Arg = local.win_apps[0].args
-    App2Key = local.win_apps[1].s3_key
-    App2Arg = local.win_apps[1].args
-    App3Key = local.win_apps[2].s3_key
-    App3Arg = local.win_apps[2].args
-  }
-}
-
-
-resource "aws_ssm_association" "install_linux" {
-  name = aws_ssm_document.install_apps_linux.name
-
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.linux.id]
-  }
-
-  parameters = {
-    Bucket = var.s3_app_bucket
-    App1Key = local.lin_apps[0].s3_key
-    App1Arg = local.lin_apps[0].args
-    App2Key = local.lin_apps[1].s3_key
-    App2Arg = local.lin_apps[1].args
-    App3Key = local.lin_apps[2].s3_key
-    App3Arg = local.lin_apps[2].args
-  }
-}
-
+      App3Key = { type = "Strin
