@@ -23,7 +23,7 @@ phases:
         }
         JSON
       - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
-      - echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"
+      - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
 
   build:
     commands:
