@@ -16,4 +16,8 @@ variable "linux_apps" {
   type = list(object({ s3_key = string, args = string }))
   default = []
 }
-variable "tags" { type = map(string) default = {} }
+variable "tags" {
+  type    = map(string)
+  default = {}
+}
+
