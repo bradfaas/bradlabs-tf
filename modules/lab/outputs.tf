@@ -20,3 +20,15 @@ output "nlb_dns_name" {
   value       = try(aws_lb.rdp[0].dns_name, null)
 }
 
+output "rdp_endpoints" {
+  description = "Ports on the NLB for each host"
+  value = var.enable_nlb_rdp ? {
+    nlb_ip   = try(aws_eip.nlb[0].public_ip, null)
+    nlb_dns  = try(aws_lb.rdp[0].dns_name, null)
+    windows  = 3389
+    linux    = 3390
+    dc       = 3391
+  } : null
+}
+
+
