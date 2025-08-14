@@ -294,7 +294,8 @@ resource "aws_ssm_document" "join_domain_win" {
     schemaVersion = "2.2"
     description   = "Join Windows to ${var.domain_name}"
     parameters    = {
-      DcIp = { type = "String" }
+      DcIp          = { type = "String" }
+      AdminPassword = { type = "String" }
     }
     mainSteps = [
       {
@@ -307,7 +308,7 @@ resource "aws_ssm_document" "join_domain_win" {
             "$adapters = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}",
             "$adapters | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @('{{ DcIp }}') }",
             "while (-not (Test-Connection -Quiet -Count 1 '{{ DcIp }}')) { Start-Sleep -Seconds 15 }",
-            "$sec = ConvertTo-SecureString '{{ssm-secure:/labs/${var.lab_id}/domainAdminPassword}}' -AsPlainText -Force",
+            "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "$cred = New-Object System.Management.Automation.PSCredential('${var.domain_netbios_name}\\Administrator',$sec)",
             "Add-Computer -DomainName '${var.domain_name}' -Credential $cred -Force -ErrorAction Stop",
             "Restart-Computer -Force"
@@ -336,47 +337,16 @@ resource "aws_ssm_document" "install_apps_win" {
       App3Arg = { type = "String", default = "" }
     }
     mainSteps = [
+      { action = "aws:runPowerShellScript", name = "PrepDir", inputs = { runCommand = ["New-Item -ItemType Directory -Force -Path C:\\Temp\\app-installs | Out-Null"] } },
+      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
+      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
+      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
       {
-        action = "aws:runPowerShellScript"
-        name   = "PrepDir"
-        inputs = { runCommand = ["New-Item -ItemType Directory -Force -Path C:\\\\Temp\\\\app-installs | Out-Null"] }
-      },
-      {
-        action = "aws:downloadContent"
-        name   = "Get1"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" })
-          destinationPath = "C:\\\\Temp\\\\app-installs"
-        }
-      },
-      {
-        action = "aws:downloadContent"
-        name   = "Get2"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" })
-          destinationPath = "C:\\\\Temp\\\\app-installs"
-        }
-      },
-      {
-        action = "aws:downloadContent"
-        name   = "Get3"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" })
-          destinationPath = "C:\\\\Temp\\\\app-installs"
-        }
-      },
-      {
-        action = "aws:runPowerShellScript"
-        name   = "Install"
+        action = "aws:runPowerShellScript",
+        name   = "Install",
         inputs = {
           runCommand = [
-            "$items = Get-ChildItem 'C:\\\\Temp\\\\app-installs' | Where-Object { -not $_.PSIsContainer }",
+            "$items = Get-ChildItem 'C:\\Temp\\app-installs' | Where-Object { -not $_.PSIsContainer }",
             "$argsMap = @{",
             "  (Split-Path -Leaf '{{ App1Key }}') = '{{ App1Arg }}'",
             "  (Split-Path -Leaf '{{ App2Key }}') = '{{ App2Arg }}'",
@@ -385,13 +355,9 @@ resource "aws_ssm_document" "install_apps_win" {
             "foreach ($f in $items) {",
             "  $ext = [IO.Path]::GetExtension($f.FullName).ToLower()",
             "  $a = $argsMap[$f.Name]",
-            "  if ($ext -eq '.msi') {",
-            "    Start-Process 'msiexec.exe' -ArgumentList @('/i', $f.FullName, '/qn', $a) -Wait -NoNewWindow",
-            "  } elseif ($ext -eq '.exe') {",
-            "    Start-Process $f.FullName -ArgumentList $a -Wait -NoNewWindow",
-            "  } else {",
-            "    Write-Host 'Skipping unsupported: ' + $f.FullName",
-            "  }",
+            "  if ($ext -eq '.msi') { Start-Process 'msiexec.exe' -ArgumentList @('/i', $f.FullName, '/qn', $a) -Wait -NoNewWindow }",
+            "  elseif ($ext -eq '.exe') { Start-Process $f.FullName -ArgumentList $a -Wait -NoNewWindow }",
+            "  else { Write-Host 'Skipping unsupported: ' + $f.FullName }",
             "}"
           ]
         }
@@ -400,6 +366,7 @@ resource "aws_ssm_document" "install_apps_win" {
   })
   tags = local.base_tags
 }
+
 
 # 4) Install apps on Linux
 resource "aws_ssm_document" "install_apps_linux" {
@@ -419,39 +386,12 @@ resource "aws_ssm_document" "install_apps_linux" {
     }
     mainSteps = [
       { action = "aws:runShellScript", name = "PrepDir", inputs = { runCommand = ["mkdir -p /var/tmp/app-installs"] } },
+      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "/var/tmp/app-installs" } },
+      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "/var/tmp/app-installs" } },
+      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "/var/tmp/app-installs" } },
       {
-        action = "aws:downloadContent"
-        name   = "Get1"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" })
-          destinationPath = "/var/tmp/app-installs"
-        }
-      },
-      {
-        action = "aws:downloadContent"
-        name   = "Get2"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" })
-          destinationPath = "/var/tmp/app-installs"
-        }
-      },
-      {
-        action = "aws:downloadContent"
-        name   = "Get3"
-        onFailure = "continue"
-        inputs = {
-          sourceType = "S3"
-          sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" })
-          destinationPath = "/var/tmp/app-installs"
-        }
-      },
-      {
-        action = "aws:runShellScript"
-        name   = "Install"
+        action = "aws:runShellScript",
+        name   = "Install",
         inputs = {
           runCommand = [
             "set -e",
@@ -499,11 +439,13 @@ resource "aws_ssm_association" "join_win" {
   }
 
   parameters = {
-    DcIp = aws_instance.dc.private_ip
+    DcIp          = aws_instance.dc.private_ip
+    AdminPassword = var.domain_admin_password
   }
 
   compliance_severity = "HIGH"
 }
+
 
 
 resource "aws_ssm_association" "install_win" {
