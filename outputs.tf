@@ -9,3 +9,7 @@ output "lab_endpoints" {
 output "instance_ids" { value = module.lab.instance_ids }
 output "vpc_id"       { value = module.lab.vpc_id }
 output "subnet_id"    { value = module.lab.subnet_id }
+
+output "nlb_public_ip"  { value = module.lab.nlb_public_ip }
+output "nlb_dns_name"   { value = module.lab.nlb_dns_name }
+
