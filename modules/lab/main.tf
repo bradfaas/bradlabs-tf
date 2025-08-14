@@ -629,6 +629,17 @@ resource "aws_lb_target_group" "linux_rdp" {
   tags = local.base_tags
 }
 
+# --- DC RDP target group (TCP/3389) ---
+resource "aws_lb_target_group" "dc_rdp" {
+  count    = var.enable_nlb_rdp ? 1 : 0
+  name     = "lab-${var.lab_id}-dc-rdp"
+  port     = 3389
+  protocol = "TCP"
+  vpc_id   = aws_vpc.this.id
+  health_check { protocol = "TCP" }  # simple TCP health check
+  tags = local.base_tags
+}
+
 resource "aws_lb_target_group_attachment" "win_attach" {
   count            = var.enable_nlb_rdp ? 1 : 0
   target_group_arn = aws_lb_target_group.win_rdp[0].arn
@@ -640,6 +651,14 @@ resource "aws_lb_target_group_attachment" "linux_attach" {
   count            = var.enable_nlb_rdp ? 1 : 0
   target_group_arn = aws_lb_target_group.linux_rdp[0].arn
   target_id        = aws_instance.linux.id
+  port             = 3389
+}
+
+# Attach DC instance to the DC RDP TG
+resource "aws_lb_target_group_attachment" "dc_attach" {
+  count            = var.enable_nlb_rdp ? 1 : 0
+  target_group_arn = aws_lb_target_group.dc_rdp[0].arn
+  target_id        = aws_instance.dc.id
   port             = 3389
 }
 
@@ -662,5 +681,17 @@ resource "aws_lb_listener" "linux_listener" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.linux_rdp[0].arn
+  }
+}
+
+# Listener on 3391 that forwards to the DC
+resource "aws_lb_listener" "dc_listener" {
+  count             = var.enable_nlb_rdp ? 1 : 0
+  load_balancer_arn = aws_lb.rdp[0].arn
+  port              = 3391
+  protocol          = "TCP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.dc_rdp[0].arn
   }
 }
