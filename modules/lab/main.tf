@@ -327,16 +327,24 @@ resource "aws_ssm_document" "setup_dc" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Promote server to DC for ${var.domain_name}"
+    description   = "Set admin password, enable RDP, and promote server to DC for ${var.domain_name}"
     parameters    = {
       AdminPassword = { type = "String" }
     }
     mainSteps = [
       {
         action = "aws:runPowerShellScript"
-        name   = "InstallADDS"
+        name   = "PrepAndPromote"
         inputs = {
           runCommand = [
+            # Set local Administrator password (becomes Domain Admin after promotion)
+            "net user Administrator '{{ AdminPassword }}'",
+  
+            # Enable RDP & firewall
+            "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
+            "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
+  
+            # ADDS
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "Install-WindowsFeature AD-Domain-Services",
             "Import-Module ADDSDeployment",
@@ -346,16 +354,17 @@ resource "aws_ssm_document" "setup_dc" {
       }
     ]
   })
+
   tags = local.base_tags
 }
 
-# 2) Join Windows desktop to domain
+# Join Windows desktop to domain
 resource "aws_ssm_document" "join_domain_win" {
   name          = "Lab-${var.lab_id}-JoinDomainWin"
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Join Windows to ${var.domain_name}"
+    description   = "Enable RDP and join Windows to ${var.domain_name}"
     parameters    = {
       DcIp          = { type = "String" }
       AdminPassword = { type = "String" }
@@ -363,14 +372,24 @@ resource "aws_ssm_document" "join_domain_win" {
     mainSteps = [
       {
         action = "aws:runPowerShellScript"
-        name   = "Join"
+        name   = "EnableRDPAndJoin"
         inputs = {
           runCommand = [
+            # If already domain-joined, no-op
             "$p = Get-WmiObject Win32_ComputerSystem",
             "if ($p.PartOfDomain -eq $true) { Write-Host 'Already joined'; exit 0 }",
+  
+            # Set local Administrator password and enable RDP
+            "net user Administrator '{{ AdminPassword }}'",
+            "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
+            "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
+  
+            # Point DNS to DC and wait for it
             "$adapters = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}",
             "$adapters | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @('{{ DcIp }}') }",
             "while (-not (Test-Connection -Quiet -Count 1 '{{ DcIp }}')) { Start-Sleep -Seconds 15 }",
+  
+            # Join domain with AdminPassword
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "$cred = New-Object System.Management.Automation.PSCredential('${var.domain_netbios_name}\\Administrator',$sec)",
             "Add-Computer -DomainName '${var.domain_name}' -Credential $cred -Force -ErrorAction Stop",
@@ -380,10 +399,47 @@ resource "aws_ssm_document" "join_domain_win" {
       }
     ]
   })
+
   tags = local.base_tags
 }
 
-# 3) Install apps on Windows
+# Install GUI + xrdp on Linux
+resource "aws_ssm_document" "linux_gui_xrdp" {
+  name          = "Lab-${var.lab_id}-LinuxGuiXrdp"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Install XFCE desktop + xrdp and set ubuntu password"
+    parameters    = {
+      UserPassword = { type = "String" }
+    }
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "InstallGUI"
+        inputs = {
+          runCommand = [
+            "set -e",
+            "export DEBIAN_FRONTEND=noninteractive",
+            "apt-get update",
+            # lightweight desktop; you can swap for ubuntu-desktop if you prefer
+            "apt-get install -y xfce4 xorg dbus-x11 x11-xserver-utils",
+            "apt-get install -y xrdp",
+            "systemctl enable xrdp",
+            "systemctl restart xrdp",
+            # set ubuntu user's password for xrdp login
+            "echo \"ubuntu:{{ UserPassword }}\" | chpasswd",
+            # set default session for xrdp
+            "su - ubuntu -c 'echo xfce4-session > ~/.xsession'"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+# Install apps on Windows
 resource "aws_ssm_document" "install_apps_win" {
   name          = "Lab-${var.lab_id}-InstallAppsWin"
   document_type = "Command"
@@ -487,7 +543,7 @@ resource "aws_ssm_association" "setup_dc" {
   }
 
   parameters = {
-    AdminPassword = var.domain_admin_password
+    AdminPassword = local.win_admin_pw
   }
 
   compliance_severity = "HIGH"
@@ -503,13 +559,23 @@ resource "aws_ssm_association" "join_win" {
 
   parameters = {
     DcIp          = aws_instance.dc.private_ip
-    AdminPassword = var.domain_admin_password
+    AdminPassword = local.win_admin_pw
   }
 
   compliance_severity = "HIGH"
 }
 
-
+resource "aws_ssm_association" "linux_gui_xrdp" {
+  name = aws_ssm_document.linux_gui_xrdp.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.linux.id]
+  }
+  parameters = {
+    UserPassword = var.linux_user_password
+  }
+  compliance_severity = "MEDIUM"
+}
 
 resource "aws_ssm_association" "install_win" {
   name = aws_ssm_document.install_apps_win.name
