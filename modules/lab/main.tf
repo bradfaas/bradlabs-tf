@@ -325,28 +325,33 @@ resource "aws_ssm_document" "setup_dc" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Set admin password, enable RDP, and promote to DC for ${var.domain_name}"
-    parameters    = {
-      AdminPassword = { type = "String" }
-    }
+    description   = "Set admin password, enable RDP, install DNS, and promote to DC for ${var.domain_name}"
+    parameters    = { AdminPassword = { type = "String" } }
     mainSteps = [
       {
         action = "aws:runPowerShellScript"
         name   = "PrepAndPromote"
         inputs = {
           runCommand = [
+            # Set local Administrator password & enable RDP firewall
             "net user Administrator '{{ AdminPassword }}'",
             "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
             "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
+  
+            # Install DNS explicitly (ADDS will normally do this, but be explicit)
+            "Install-WindowsFeature DNS -IncludeManagementTools",
+  
+            # Promote to new forest (this will reboot automatically)
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "Install-WindowsFeature AD-Domain-Services",
             "Import-Module ADDSDeployment",
-            "Install-ADDSForest -DomainName '${var.domain_name}' -SafeModeAdministratorPassword $sec -Force"
+            "Install-ADDSForest -DomainName '${var.domain_name}' -InstallDns:$true -SafeModeAdministratorPassword $sec -Force"
           ]
         }
       }
     ]
   })
+
   tags = local.base_tags
 }
 
@@ -356,7 +361,7 @@ resource "aws_ssm_document" "join_domain_win" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Enable RDP and join Windows to ${var.domain_name}"
+    description   = "Enable RDP, point DNS to DC, wait for AD/DNS readiness, then join ${var.domain_name}"
     parameters    = {
       DcIp          = { type = "String" }
       AdminPassword = { type = "String" }
@@ -367,23 +372,53 @@ resource "aws_ssm_document" "join_domain_win" {
         name   = "EnableRDPAndJoin"
         inputs = {
           runCommand = [
-            "$p = Get-WmiObject Win32_ComputerSystem",
-            "if ($p.PartOfDomain -eq $true) { Write-Host 'Already joined'; exit 0 }",
+            "$ErrorActionPreference = 'Stop'",
+  
+            # If already domain-joined, no-op
+            "$cs = Get-CimInstance Win32_ComputerSystem",
+            "if ($cs.PartOfDomain) { Write-Host 'Already joined'; exit 0 }",
+  
+            # Local admin password + RDP on
             "net user Administrator '{{ AdminPassword }}'",
             "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
             "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'",
+  
+            # Point DNS at DC for all up adapters
             "$adapters = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'}",
             "$adapters | ForEach-Object { Set-DnsClientServerAddress -InterfaceIndex $_.ifIndex -ServerAddresses @('{{ DcIp }}') }",
-            "while (-not (Test-Connection -Quiet -Count 1 '{{ DcIp }}')) { Start-Sleep -Seconds 15 }",
-            "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
+  
+            # Wait for the DC to be READY: DNS (53), LDAP (389), and SRV records
+            "$ready = $false",
+            "for ($i=0; $i -lt 120 -and -not $ready; $i++) {",
+            "  try {",
+            "    $dns = Test-NetConnection -ComputerName '{{ DcIp }}' -Port 53 -InformationLevel Quiet",
+            "    $ldap = Test-NetConnection -ComputerName '{{ DcIp }}' -Port 389 -InformationLevel Quiet",
+            "    $srv  = Resolve-DnsName -Type SRV _ldap._tcp.dc._msdcs.${var.domain_name} -Server '{{ DcIp }}' -ErrorAction Stop",
+            "    if ($dns -and $ldap -and $srv) { $ready = $true }",
+            "  } catch {}",
+            "  if (-not $ready) { Start-Sleep -Seconds 15 }",
+            "}",
+            "if (-not $ready) { throw 'DC not ready after wait; aborting join for retry' }",
+  
+            # Join domain with Administrator creds (NetBIOS\Administrator)
+            "$sec  = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "$cred = New-Object System.Management.Automation.PSCredential('${var.domain_netbios_name}\\Administrator',$sec)",
-            "Add-Computer -DomainName '${var.domain_name}' -Credential $cred -Force -ErrorAction Stop",
+  
+            # Try join with a few retries (AD may still be finalizing)
+            "$joined = $false",
+            "for ($j=0; $j -lt 5 -and -not $joined; $j++) {",
+            "  try { Add-Computer -DomainName '${var.domain_name}' -Credential $cred -Force -ErrorAction Stop; $joined = $true }",
+            "  catch { Start-Sleep -Seconds 30 }",
+            "}",
+            "if (-not $joined) { throw 'Failed to join after retries' }",
+  
             "Restart-Computer -Force"
           ]
         }
       }
     ]
   })
+
   tags = local.base_tags
 }
 
