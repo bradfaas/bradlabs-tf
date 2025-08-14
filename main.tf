@@ -25,6 +25,9 @@ module "lab" {
 
   domain_admin_password = var.domain_admin_password
   windows_admin_password = var.windows_admin_password
+  create_domain_user = var.create_domain_user
+  domain_user_password = var.domain_user_password
+
   linux_user_password    = var.linux_user_password
 
   windows_apps = var.windows_apps
