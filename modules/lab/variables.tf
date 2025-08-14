@@ -102,7 +102,7 @@ variable "enable_nat" {
 # Expose RDP via a public NLB (instances stay private)
 variable "enable_nlb_rdp" {
   type    = bool
-  default = false
+  default = true
 }
 
 # Source CIDR allowed to RDP/xRDP to instances (NLB preserves client source IP)
