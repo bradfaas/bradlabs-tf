@@ -1,3 +1,9 @@
+# enable/disable NAT (for cost control)
+variable "enable_nat" {
+  type    = bool
+  default = true
+}
+
 variable "lab_id" {
   type = string
 }
