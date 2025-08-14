@@ -422,6 +422,67 @@ resource "aws_ssm_document" "join_domain_win" {
   tags = local.base_tags
 }
 
+resource "aws_ssm_document" "join_domain_linux" {
+  name          = "Lab-${var.lab_id}-JoinDomainLinux"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Configure DNS to DC; install realmd/sssd; wait for AD readiness; join ${var.domain_name}; enable domain logins"
+    parameters    = {
+      DcIp          = { type = "String" }
+      DomainName    = { type = "String" }
+      Netbios       = { type = "String" }
+      AdminPassword = { type = "String" }
+    }
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "LinuxJoinAD"
+        inputs = {
+          runCommand = [
+            "set -e",
+            "export DEBIAN_FRONTEND=noninteractive",
+
+            # Ensure DNS points at DC (systemd-resolved)
+            "if [ -f /etc/systemd/resolved.conf ]; then sudo sed -i '/^DNS=/d;/^Domains=/d' /etc/systemd/resolved.conf; fi",
+            "printf '\\nDNS={{ DcIp }}\\nDomains={{ DomainName }}\\n' | sudo tee -a /etc/systemd/resolved.conf >/dev/null || true",
+            "sudo systemctl restart systemd-resolved || true",
+
+            # Packages for AD join
+            "sudo apt-get update",
+            "sudo apt-get install -y realmd sssd sssd-tools adcli packagekit samba-common-bin krb5-user libnss-sss libpam-sss",
+
+            # Wait until DC answers DNS(53), LDAP(389), and publishes SRV
+            "retry() { n=0; until [ $n -ge 40 ]; do \"$@\" && break; n=$((n+1)); sleep 6; done; }",
+            "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/53'\"",
+            "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/389'\"",
+            "retry host -t SRV _ldap._tcp.dc._msdcs.{{ DomainName }} {{ DcIp }}",
+
+            # Discover realm and join
+            "echo '{{ AdminPassword }}' | sudo realm join --verbose --user=Administrator {{ DomainName }}",
+
+            # sssd settings: short names for logins, home dir creation
+            "sudo crudini --set /etc/sssd/sssd.conf 'domain/{{ DomainName }}' use_fully_qualified_names False || (echo -e \"[sssd]\\nservices = nss, pam\\ndomains = {{ DomainName }}\\n\\n[domain/{{ DomainName }}]\\nid_provider = ad\\naccess_provider = ad\\nuse_fully_qualified_names = False\\n\" | sudo tee /etc/sssd/sssd.conf >/dev/null)",
+            "sudo chmod 600 /etc/sssd/sssd.conf",
+            "sudo pam-auth-update --enable mkhomedir || echo 'session required pam_mkhomedir.so skel=/etc/skel/ umask=0022' | sudo tee -a /etc/pam.d/common-session >/dev/null",
+
+            # Allow Domain Users to log in (you can tighten later)
+            "sudo realm permit -g 'Domain Users' || true",
+
+            # Restart services, ensure xrdp picks up pam/sssd
+            "sudo systemctl restart sssd || true",
+            "sudo systemctl restart xrdp || true",
+            # xrdp TLS access (recommended): allow xrdp to read certs
+            "sudo adduser xrdp ssl-cert || true"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+
 # Install apps on Windows
 resource "aws_ssm_document" "install_apps_win" {
   name          = "Lab-${var.lab_id}-InstallAppsWin"
