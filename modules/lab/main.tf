@@ -400,4 +400,267 @@ resource "aws_ssm_document" "install_apps_win" {
       App1Arg = { type = "String", default = "" }
       App2Key = { type = "String", default = "" }
       App2Arg = { type = "String", default = "" }
-      App3Key = { type = "Strin
+      App3Key = { type = "String", default = "" }
+      App3Arg = { type = "String", default = "" }
+    }
+    mainSteps = [
+      { action = "aws:runPowerShellScript", name = "PrepDir", inputs = { runCommand = ["New-Item -ItemType Directory -Force -Path C:\\Temp\\app-installs | Out-Null"] } },
+      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
+      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
+      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "C:\\Temp\\app-installs" } },
+      {
+        action = "aws:runPowerShellScript",
+        name   = "Install",
+        inputs = {
+          runCommand = [
+            "$items = Get-ChildItem 'C:\\Temp\\app-installs' | Where-Object { -not $_.PSIsContainer }",
+            "$argsMap = @{",
+            "  (Split-Path -Leaf '{{ App1Key }}') = '{{ App1Arg }}'",
+            "  (Split-Path -Leaf '{{ App2Key }}') = '{{ App2Arg }}'",
+            "  (Split-Path -Leaf '{{ App3Key }}') = '{{ App3Arg }}'",
+            "}",
+            "foreach ($f in $items) {",
+            "  $ext = [IO.Path]::GetExtension($f.FullName).ToLower()",
+            "  $a = $argsMap[$f.Name]",
+            "  if ($ext -eq '.msi') { Start-Process 'msiexec.exe' -ArgumentList @('/i', $f.FullName, '/qn', $a) -Wait -NoNewWindow }",
+            "  elseif ($ext -eq '.exe') { Start-Process $f.FullName -ArgumentList $a -Wait -NoNewWindow }",
+            "  else { Write-Host 'Skipping unsupported: ' + $f.FullName }",
+            "}"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+# Install apps on Linux
+resource "aws_ssm_document" "install_apps_linux" {
+  name          = "Lab-${var.lab_id}-InstallAppsLinux"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Install up to 3 Linux apps from S3"
+    parameters    = {
+      Bucket  = { type = "String" }
+      App1Key = { type = "String", default = "" }
+      App1Arg = { type = "String", default = "" }
+      App2Key = { type = "String", default = "" }
+      App2Arg = { type = "String", default = "" }
+      App3Key = { type = "String", default = "" }
+      App3Arg = { type = "String", default = "" }
+    }
+    mainSteps = [
+      { action = "aws:runShellScript", name = "PrepDir", inputs = { runCommand = ["set -e", "mkdir -p /var/tmp/app-installs"] } },
+      { action = "aws:downloadContent", name = "Get1", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App1Key }}" }), destinationPath = "/var/tmp/app-installs" } },
+      { action = "aws:downloadContent", name = "Get2", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App2Key }}" }), destinationPath = "/var/tmp/app-installs" } },
+      { action = "aws:downloadContent", name = "Get3", inputs = { sourceType = "S3", sourceInfo = jsonencode({ path = "s3://{{ Bucket }}/{{ App3Key }}" }), destinationPath = "/var/tmp/app-installs" } },
+      {
+        action = "aws:runShellScript",
+        name   = "Install",
+        inputs = {
+          runCommand = [
+            "set -e",
+            "cd /var/tmp/app-installs || exit 0",
+            "for f in *; do",
+            "  case \"$f\" in",
+            "    *.deb) dpkg -i \"$f\" || true ;;",
+            "    *.rpm) rpm -i --nodeps \"$f\" || true ;;",
+            "    *.run|*.sh) chmod +x \"$f\" && ./\"$f\" {{ App1Arg }} {{ App2Arg }} {{ App3Arg }} || true ;;",
+            "    *) echo \"Skipping $f\" ;;",
+            "  esac",
+            "done"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+# Install XFCE + xrdp on Ubuntu and set password
+resource "aws_ssm_document" "linux_gui_xrdp" {
+  name          = "Lab-${var.lab_id}-LinuxGuiXrdp"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Install XFCE desktop + xrdp and set ubuntu password"
+    parameters    = {
+      UserPassword = { type = "String" }
+    }
+    mainSteps = [
+      {
+        action = "aws:runShellScript"
+        name   = "InstallGUI"
+        inputs = {
+          runCommand = [
+            "set -e",
+            "export DEBIAN_FRONTEND=noninteractive",
+            "apt-get update",
+            "apt-get install -y xfce4 xorg dbus-x11 x11-xserver-utils",
+            "apt-get install -y xrdp",
+            "systemctl enable xrdp",
+            "systemctl restart xrdp",
+            "echo \"ubuntu:{{ UserPassword }}\" | chpasswd",
+            "su - ubuntu -c 'echo xfce4-session > ~/.xsession'"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+# ------------------------
+# Associations
+# ------------------------
+resource "aws_ssm_association" "setup_dc" {
+  name = aws_ssm_document.setup_dc.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.dc.id]
+  }
+  parameters = {
+    AdminPassword = local.win_admin_pw
+  }
+  compliance_severity = "HIGH"
+}
+
+resource "aws_ssm_association" "join_win" {
+  name = aws_ssm_document.join_domain_win.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.win.id]
+  }
+  parameters = {
+    DcIp          = aws_instance.dc.private_ip
+    AdminPassword = local.win_admin_pw
+  }
+  compliance_severity = "HIGH"
+}
+
+resource "aws_ssm_association" "install_win" {
+  name = aws_ssm_document.install_apps_win.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.win.id]
+  }
+  parameters = {
+    Bucket = var.s3_app_bucket
+    App1Key = local.win_apps[0].s3_key
+    App1Arg = local.win_apps[0].args
+    App2Key = local.win_apps[1].s3_key
+    App2Arg = local.win_apps[1].args
+    App3Key = local.win_apps[2].s3_key
+    App3Arg = local.win_apps[2].args
+  }
+}
+
+resource "aws_ssm_association" "install_linux" {
+  name = aws_ssm_document.install_apps_linux.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.linux.id]
+  }
+  parameters = {
+    Bucket = var.s3_app_bucket
+    App1Key = local.lin_apps[0].s3_key
+    App1Arg = local.lin_apps[0].args
+    App2Key = local.lin_apps[1].s3_key
+    App2Arg = local.lin_apps[1].args
+    App3Key = local.lin_apps[2].s3_key
+    App3Arg = local.lin_apps[2].args
+  }
+}
+
+resource "aws_ssm_association" "linux_gui_xrdp" {
+  name = aws_ssm_document.linux_gui_xrdp.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.linux.id]
+  }
+  parameters = {
+    UserPassword = var.linux_user_password
+  }
+  compliance_severity = "MEDIUM"
+}
+
+# ------------------------
+# Public NLB for RDP/xRDP (instances remain private)
+# ------------------------
+resource "aws_eip" "nlb" {
+  count  = var.enable_nlb_rdp ? 1 : 0
+  domain = "vpc"
+  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-nlb-eip" })
+}
+
+resource "aws_lb" "rdp" {
+  count               = var.enable_nlb_rdp ? 1 : 0
+  name                = "lab-${var.lab_id}-rdp"
+  load_balancer_type  = "network"
+  internal            = false
+  enable_deletion_protection = false
+
+  subnet_mapping {
+    subnet_id     = aws_subnet.public.id
+    allocation_id = aws_eip.nlb[0].id
+  }
+
+  tags = local.base_tags
+}
+
+resource "aws_lb_target_group" "win_rdp" {
+  count    = var.enable_nlb_rdp ? 1 : 0
+  name     = "lab-${var.lab_id}-win-rdp"
+  port     = 3389
+  protocol = "TCP"
+  vpc_id   = aws_vpc.this.id
+  health_check { protocol = "TCP" }
+  tags = local.base_tags
+}
+
+resource "aws_lb_target_group" "linux_rdp" {
+  count    = var.enable_nlb_rdp ? 1 : 0
+  name     = "lab-${var.lab_id}-linux-rdp"
+  port     = 3389
+  protocol = "TCP"
+  vpc_id   = aws_vpc.this.id
+  health_check { protocol = "TCP" }
+  tags = local.base_tags
+}
+
+resource "aws_lb_target_group_attachment" "win_attach" {
+  count            = var.enable_nlb_rdp ? 1 : 0
+  target_group_arn = aws_lb_target_group.win_rdp[0].arn
+  target_id        = aws_instance.win.id
+  port             = 3389
+}
+
+resource "aws_lb_target_group_attachment" "linux_attach" {
+  count            = var.enable_nlb_rdp ? 1 : 0
+  target_group_arn = aws_lb_target_group.linux_rdp[0].arn
+  target_id        = aws_instance.linux.id
+  port             = 3389
+}
+
+resource "aws_lb_listener" "win_listener" {
+  count             = var.enable_nlb_rdp ? 1 : 0
+  load_balancer_arn = aws_lb.rdp[0].arn
+  port              = 3389
+  protocol          = "TCP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.win_rdp[0].arn
+  }
+}
+
+resource "aws_lb_listener" "linux_listener" {
+  count             = var.enable_nlb_rdp ? 1 : 0
+  load_balancer_arn = aws_lb.rdp[0].arn
+  port              = 3390
+  protocol          = "TCP"
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.linux_rdp[0].arn
+  }
+}
