@@ -13,3 +13,6 @@ output "subnet_id"    { value = module.lab.subnet_id }
 output "nlb_public_ip"  { value = module.lab.nlb_public_ip }
 output "nlb_dns_name"   { value = module.lab.nlb_dns_name }
 
+output "rdp_endpoints" { value = module.lab.rdp_endpoints }
+
+
