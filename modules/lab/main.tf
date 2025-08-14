@@ -6,18 +6,22 @@ terraform {
 }
 
 locals {
-  win_apps = concat(var.windows_apps, [
-    for _ in range(3 - length(var.windows_apps)) : { s3_key = "", args = "" }
-  ])[0:3]
-  lin_apps = concat(var.linux_apps, [
-    for _ in range(3 - length(var.linux_apps)) : { s3_key = "", args = "" }
-  ])[0:3]
+  win_apps = slice(
+    concat(var.windows_apps, [for _ in range(3 - length(var.windows_apps)) : { s3_key = "", args = "" }]),
+    0, 3
+  )
+
+  lin_apps = slice(
+    concat(var.linux_apps,  [for _ in range(3 - length(var.linux_apps))  : { s3_key = "", args = "" }]),
+    0, 3
+  )
 
   base_tags = merge(var.tags, {
     labId  = var.lab_id
     userId = var.user_id
   })
 }
+
 
 # ------------------------
 # Networking (private-only)
@@ -157,9 +161,14 @@ data "aws_ami" "ubuntu2204" {
 data "aws_iam_policy_document" "assume_ec2" {
   statement {
     actions = ["sts:AssumeRole"]
-    principals { type = "Service", identifiers = ["ec2.amazonaws.com"] }
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
   }
 }
+
 
 resource "aws_iam_role" "instance" {
   name               = "lab-${var.lab_id}-instance-role"
@@ -474,19 +483,28 @@ resource "aws_ssm_association" "setup_dc" {
 
 resource "aws_ssm_association" "join_win" {
   name = aws_ssm_document.join_domain_win.name
+
   targets {
     key    = "InstanceIds"
     values = [aws_instance.win.id]
   }
+
   parameters = {
     DcIp = aws_instance.dc.private_ip
   }
+
   compliance_severity = "HIGH"
 }
 
+
 resource "aws_ssm_association" "install_win" {
   name = aws_ssm_document.install_apps_win.name
-  targets { key = "InstanceIds"; values = [aws_instance.win.id] }
+
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.win.id]
+  }
+
   parameters = {
     Bucket = var.s3_app_bucket
     App1Key = local.win_apps[0].s3_key
@@ -498,9 +516,15 @@ resource "aws_ssm_association" "install_win" {
   }
 }
 
+
 resource "aws_ssm_association" "install_linux" {
   name = aws_ssm_document.install_apps_linux.name
-  targets { key = "InstanceIds"; values = [aws_instance.linux.id] }
+
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.linux.id]
+  }
+
   parameters = {
     Bucket = var.s3_app_bucket
     App1Key = local.lin_apps[0].s3_key
@@ -511,3 +535,4 @@ resource "aws_ssm_association" "install_linux" {
     App3Arg = local.lin_apps[2].args
   }
 }
+
