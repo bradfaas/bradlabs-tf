@@ -159,6 +159,30 @@ resource "aws_security_group" "endpoints" {
   tags = local.base_tags
 }
 
+# Allow RDP inbound
+resource "aws_security_group" "rdp_public" {
+  name        = "lab-${var.lab_id}-rdp-public"
+  description = "Allow inbound RDP from allowed CIDR"
+  vpc_id      = aws_vpc.this.id
+
+  ingress {
+    description = "RDP / xrdp"
+    from_port   = 3389
+    to_port     = 3389
+    protocol    = "tcp"
+    cidr_blocks = [var.desktop_rdp_cidr]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = local.base_tags
+}
+
 # VPC endpoints
 resource "aws_vpc_endpoint" "s3" {
   count             = var.create_s3_gateway_endpoint ? 1 : 0
