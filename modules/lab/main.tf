@@ -482,6 +482,80 @@ resource "aws_ssm_document" "join_domain_linux" {
   tags = local.base_tags
 }
 
+resource "aws_ssm_document" "create_ad_user" {
+  name          = "Lab-${var.lab_id}-CreateAdUser"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Create domain user equal to user_id with provided password; enable account"
+    parameters    = {
+      UserId       = { type = "String" }
+      UserPassword = { type = "String" }
+    }
+    mainSteps = [
+      {
+        action = "aws:runPowerShellScript"
+        name   = "CreateUser"
+        inputs = {
+          runCommand = [
+            "$ErrorActionPreference = 'Stop'",
+            # Wait for AD to be ready
+            "$ok = $false; for ($i=0; $i -lt 60 -and -not $ok; $i++) { try { Get-ADDomain -ErrorAction Stop | Out-Null; $ok = $true } catch { Start-Sleep -Seconds 10 } }",
+            "if (-not $ok) { throw 'AD not ready on DC' }",
+
+            "$u = '{{ UserId }}'",
+            "$sec = ConvertTo-SecureString '{{ UserPassword }}' -AsPlainText -Force",
+
+            "try { $existing = Get-ADUser -Filter \"(SamAccountName -eq '$u')\" -ErrorAction Stop } catch { $existing = $null }",
+            "if ($existing) {",
+            "  Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec",
+            "  Enable-ADAccount -Identity $u",
+            "  Write-Host \"User $u already existed; password reset + enabled.\"",
+            "} else {",
+            "  New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled $true -PasswordNeverExpires $true",
+            "  Write-Host \"User $u created.\"",
+            "}"
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
+# Allow the domain user to RDP to the Windows endpoint
+resource "aws_ssm_document" "grant_rdp_user_win" {
+  name          = "Lab-${var.lab_id}-GrantRdpUserWin"
+  document_type = "Command"
+  content = jsonencode({
+    schemaVersion = "2.2"
+    description   = "Add domain user to local Remote Desktop Users on Windows desktop"
+    parameters    = {
+      Netbios = { type = "String" }
+      UserId  = { type = "String" }
+    }
+    mainSteps = [
+      {
+        action = "aws:runPowerShellScript"
+        name   = "GrantRDP"
+        inputs = {
+          runCommand = [
+            "$ErrorActionPreference = 'Stop'",
+            # Wait until machine is joined to domain
+            "$ok = $false; for ($i=0; $i -lt 60 -and -not $ok; $i++) { $cs = Get-CimInstance Win32_ComputerSystem; if ($cs.PartOfDomain) { $ok = $true } else { Start-Sleep -Seconds 10 } }",
+            "if (-not $ok) { throw 'Machine not domain-joined yet' }",
+
+            "$acct = '{{ Netbios }}\\{{ UserId }}'",
+            "try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction Stop } catch { Write-Host $_.Exception.Message }",
+            "Write-Host \"Granted RDP to $acct on this host\""
+          ]
+        }
+      }
+    ]
+  })
+  tags = local.base_tags
+}
+
 
 # Install apps on Windows
 resource "aws_ssm_document" "install_apps_win" {
@@ -633,6 +707,49 @@ resource "aws_ssm_association" "join_win" {
     AdminPassword = local.win_admin_pw
   }
   compliance_severity = "HIGH"
+}
+
+resource "aws_ssm_association" "join_linux" {
+  name = aws_ssm_document.join_domain_linux.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.linux.id]
+  }
+  parameters = {
+    DcIp          = aws_instance.dc.private_ip
+    DomainName    = var.domain_name
+    Netbios       = var.domain_netbios_name
+    AdminPassword = local.win_admin_pw
+  }
+  compliance_severity = "HIGH"
+}
+
+resource "aws_ssm_association" "create_ad_user" {
+  count = var.create_domain_user ? 1 : 0
+  name  = aws_ssm_document.create_ad_user.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.dc.id]
+  }
+  parameters = {
+    UserId       = var.user_id
+    UserPassword = var.domain_user_password
+  }
+  compliance_severity = "MEDIUM"
+}
+
+resource "aws_ssm_association" "grant_rdp_user_win" {
+  count = var.create_domain_user ? 1 : 0
+  name  = aws_ssm_document.grant_rdp_user_win.name
+  targets {
+    key    = "InstanceIds"
+    values = [aws_instance.win.id]
+  }
+  parameters = {
+    Netbios = var.domain_netbios_name
+    UserId  = var.user_id
+  }
+  compliance_severity = "LOW"
 }
 
 resource "aws_ssm_association" "install_win" {
