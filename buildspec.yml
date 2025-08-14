@@ -6,23 +6,23 @@ phases:
       - curl -fsSL https://releases.hashicorp.com/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip -o tf.zip
       - unzip -q tf.zip && mv terraform /usr/local/bin/ && terraform -version
   pre_build:
-  commands:
-    - echo "Writing lab.auto.tfvars.json"
-    - |
-      cat > lab.auto.tfvars.json <<JSON
-      {
-        "region":        "${STATE_REGION}",
-        "lab_id":        "${LAB_ID}",
-        "user_id":       "${USER_ID}",
-        "s3_app_bucket": "${APP_BUCKET}",
-        "domain_admin_password": "${DOMAIN_ADMIN_PASSWORD}",
-        "windows_apps": ${WINDOWS_APPS_JSON:-[]},
-        "linux_apps":   ${LINUX_APPS_JSON:-[]},
-        "tags":         ${TAGS_JSON:-{"project":"hands-on-lab"}}
-      }
-      JSON
-    - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
-    - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
+    commands:
+      - echo "Writing lab.auto.tfvars.json"
+      - |
+        cat > lab.auto.tfvars.json <<JSON
+        {
+          "region":        "${STATE_REGION}",
+          "lab_id":        "${LAB_ID}",
+          "user_id":       "${USER_ID}",
+          "s3_app_bucket": "${APP_BUCKET}",
+          "domain_admin_password": "${DOMAIN_ADMIN_PASSWORD}",
+          "windows_apps": ${WINDOWS_APPS_JSON:-[]},
+          "linux_apps":   ${LINUX_APPS_JSON:-[]},
+          "tags":         ${TAGS_JSON:-{"project":"hands-on-lab"}}
+        }
+        JSON
+      - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
+      - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
 
   build:
     commands:
