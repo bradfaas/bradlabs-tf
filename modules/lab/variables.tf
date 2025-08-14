@@ -87,6 +87,25 @@ variable "instance_types" {
   }
 }
 
+# expose desktops to the public Internet (demo only!)
+variable "enable_public_desktop_access" {
+  type    = bool
+  default = false
+}
+
+# who can RDP in (strongly recommended to limit this, but wide open for this demo)
+variable "desktop_rdp_cidr" {
+  type    = string
+  default = "0.0.0.0/0" # demo only; override to e.g. "203.0.113.45/32"
+}
+
+# keep IPs stable across stops (optional)
+variable "assign_elastic_ips" {
+  type    = bool
+  default = false
+}
+
+
 variable "create_interface_endpoints" {
   type    = bool
   default = true
