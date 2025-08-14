@@ -8,7 +8,6 @@ terraform {
     # bucket       = ""
     # key          = ""
     # region       = ""
-    use_lockfile = true
   }
 }
 
