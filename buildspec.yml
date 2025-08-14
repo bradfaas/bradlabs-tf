@@ -38,14 +38,22 @@ phases:
 build:
   commands:
     - set -e
+    - echo "PWD: $(pwd)"; ls -la
     - terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${STATE_REGION}"
     - |
       if [ "${DESTROY:-false}" = "true" ]; then
+        echo "[Build] DESTROY=true → running terraform destroy"
         terraform destroy -auto-approve
+        # Ensure artifact exists even on destroy
+        echo '{}' > tf-outputs.json
       else
+        echo "[Build] Applying lab infrastructure"
         terraform apply -auto-approve
-        terraform output -json > tf-outputs.json || true
+        # Write outputs; if there are none (or an intermittent error), still produce a file
+        terraform output -json > tf-outputs.json || echo '{}' > tf-outputs.json
       fi
+    - echo "[Build] Final artifact contents:" && ls -la tf-outputs.json
+
 
 
 artifacts:
