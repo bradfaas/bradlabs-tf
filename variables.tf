@@ -7,6 +7,21 @@ variable "domain_admin_password" {
   sensitive = true
 }
 
+variable "windows_admin_password" {
+  type      = string
+  default   = null
+  sensitive = true
+}
+
+variable "linux_user_password" {
+  type      = string
+  sensitive = true
+}
+
+variable "enable_nat" {
+  type    = bool
+  default = true
+}
 
 variable "windows_apps" {
   type = list(object({ s3_key = string, args = string }))
