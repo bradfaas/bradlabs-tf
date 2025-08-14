@@ -1,0 +1,11 @@
+output "lab_endpoints" {
+  value = {
+    dc_ip    = module.lab.dc_private_ip
+    win_ip   = module.lab.win_private_ip
+    linux_ip = module.lab.linux_private_ip
+  }
+}
+
+output "instance_ids" { value = module.lab.instance_ids }
+output "vpc_id"       { value = module.lab.vpc_id }
+output "subnet_id"    { value = module.lab.subnet_id }
