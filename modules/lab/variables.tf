@@ -37,6 +37,19 @@ variable "domain_admin_password" {
   sensitive = true
 }
 
+# Optional override; if null, we reuse domain_admin_password for Windows local/domain Administrator
+variable "windows_admin_password" {
+  type      = string
+  default   = null
+  sensitive = true
+}
+
+# Password for Ubuntu's 'ubuntu' account (used for xrdp login)
+variable "linux_user_password" {
+  type      = string
+  sensitive = true
+}
+
 # App catalog location (S3 bucket for installers)
 variable "s3_app_bucket" {
   type = string
