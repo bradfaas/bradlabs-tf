@@ -28,6 +28,8 @@ phases:
             "domain_admin_password": os.environ["DOMAIN_ADMIN_PASSWORD"],
             "linux_user_password": os.environ.get("LINUX_DESKTOP_PASSWORD",""),
             "windows_admin_password": os.environ.get("WINDOWS_ADMIN_PASSWORD") or None,
+            "create_domain_user": (os.environ.get("CREATE_DOMAIN_USER","true").lower() == "true"),
+            "domain_user_password": os.environ.get("DOMAIN_USER_PASSWORD","Password123$"),
             "windows_apps": jload("WINDOWS_APPS_JSON","[]"),
             "linux_apps": jload("LINUX_APPS_JSON","[]"),
             "tags": jload("TAGS_JSON",'{"project":"hands-on-lab"}')
