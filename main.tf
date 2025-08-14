@@ -20,7 +20,12 @@ module "lab" {
   region     = var.region
 
   s3_app_bucket         = var.s3_app_bucket
+
+  enable_nat            = var.enable_nat
+
   domain_admin_password = var.domain_admin_password
+  windows_admin_password = var.windows_admin_password
+  linux_user_password    = var.linux_user_password
 
   windows_apps = var.windows_apps
   linux_apps   = var.linux_apps
