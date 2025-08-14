@@ -27,7 +27,7 @@ phases:
 
   build:
     commands:
-      - terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${STATE_REGION}" -backend-config="use_lockfile=true"
+      - terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${STATE_REGION}"
       - if [ "${DESTROY:-false}" = "true" ]; then terraform destroy -auto-approve; else terraform apply -auto-approve && terraform output -json > tf-outputs.json || true; fi
 
 artifacts:
