@@ -5,25 +5,43 @@ phases:
     commands:
       - curl -fsSL https://releases.hashicorp.com/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip -o tf.zip
       - unzip -q tf.zip && mv terraform /usr/local/bin/ && terraform -version
+  
   pre_build:
     commands:
-      - echo "Writing lab.auto.tfvars.json"
+      - set -euo pipefail
+      # Sensible defaults if your Lambda didn't override them
+      - if [ -z "${WINDOWS_APPS_JSON:-}" ]; then WINDOWS_APPS_JSON='[]'; fi
+      - if [ -z "${LINUX_APPS_JSON:-}" ]; then LINUX_APPS_JSON='[]'; fi
+      - if [ -z "${TAGS_JSON:-}" ]; then TAGS_JSON='{"project":"hands-on-lab"}'; fi
+  
+      # Build lab.auto.tfvars.json using Python for correct JSON escaping
       - |
-        cat > lab.auto.tfvars.json <<JSON
-        {
-          "region":        "${STATE_REGION}",
-          "lab_id":        "${LAB_ID}",
-          "user_id":       "${USER_ID}",
-          "s3_app_bucket": "${APP_BUCKET}",
-          "domain_admin_password": "${DOMAIN_ADMIN_PASSWORD}",
-          "windows_apps": ${WINDOWS_APPS_JSON:-[]},
-          "linux_apps":   ${LINUX_APPS_JSON:-[]},
-          "tags":         ${TAGS_JSON:-{"project":"hands-on-lab"}}
+        python3 - <<'PY'
+        import os, json, sys
+        def jload(env, default_json):
+            try:
+                return json.loads(os.environ.get(env, default_json))
+            except Exception as e:
+                sys.stderr.write(f"Invalid JSON in ${env}: {e}\n")
+                sys.exit(2)
+        out = {
+            "region": os.environ["STATE_REGION"],
+            "lab_id": os.environ["LAB_ID"],
+            "user_id": os.environ["USER_ID"],
+            "s3_app_bucket": os.environ["APP_BUCKET"],
+            # Password may contain special chars; let JSON encoder escape it
+            "domain_admin_password": os.environ["DOMAIN_ADMIN_PASSWORD"],
+            "windows_apps": jload("WINDOWS_APPS_JSON", "[]"),
+            "linux_apps": jload("LINUX_APPS_JSON", "[]"),
+            "tags": jload("TAGS_JSON", '{"project":"hands-on-lab"}')
         }
-        JSON
+        with open("lab.auto.tfvars.json","w") as f:
+            json.dump(out, f)
+        PY
+  
       - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
       - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
-
+      
   build:
     commands:
       - terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${STATE_REGION}"
