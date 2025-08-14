@@ -20,6 +20,8 @@ locals {
     labId  = var.lab_id
     userId = var.user_id
   })
+
+  win_admin_pw = coalesce(var.windows_admin_password, var.domain_admin_password)
 }
 
 
