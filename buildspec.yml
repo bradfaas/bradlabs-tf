@@ -26,6 +26,8 @@ phases:
             "user_id": os.environ["USER_ID"],
             "s3_app_bucket": os.environ["APP_BUCKET"],
             "domain_admin_password": os.environ["DOMAIN_ADMIN_PASSWORD"],
+            "linux_user_password": os.environ.get("LINUX_DESKTOP_PASSWORD",""),
+            "windows_admin_password": os.environ.get("WINDOWS_ADMIN_PASSWORD") or None,
             "windows_apps": jload("WINDOWS_APPS_JSON","[]"),
             "linux_apps": jload("LINUX_APPS_JSON","[]"),
             "tags": jload("TAGS_JSON",'{"project":"hands-on-lab"}')
