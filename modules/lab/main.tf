@@ -265,13 +265,16 @@ resource "aws_ssm_document" "setup_dc" {
   content = jsonencode({
     schemaVersion = "2.2"
     description   = "Promote server to DC for ${var.domain_name}"
+    parameters    = {
+      AdminPassword = { type = "String" }
+    }
     mainSteps = [
       {
         action = "aws:runPowerShellScript"
         name   = "InstallADDS"
         inputs = {
           runCommand = [
-            "$sec = ConvertTo-SecureString '{{ssm-secure:/labs/${var.lab_id}/domainAdminPassword}}' -AsPlainText -Force",
+            "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "Install-WindowsFeature AD-Domain-Services",
             "Import-Module ADDSDeployment",
             "Install-ADDSForest -DomainName '${var.domain_name}' -SafeModeAdministratorPassword $sec -Force"
@@ -474,10 +477,16 @@ resource "aws_ssm_document" "install_apps_linux" {
 # ------------------------
 resource "aws_ssm_association" "setup_dc" {
   name = aws_ssm_document.setup_dc.name
+
   targets {
     key    = "InstanceIds"
     values = [aws_instance.dc.id]
   }
+
+  parameters = {
+    AdminPassword = var.domain_admin_password
+  }
+
   compliance_severity = "HIGH"
 }
 
