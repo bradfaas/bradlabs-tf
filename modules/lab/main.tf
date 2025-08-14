@@ -35,17 +35,78 @@ resource "aws_vpc" "this" {
 
 data "aws_availability_zones" "available" {}
 
-resource "aws_subnet" "private" {
+# ---------- Subnets: 1x public (/28) + 1x private (/28) ----------
+# Split the /24 into /28s; index 0 = public, index 1 = private
+locals {
+  public_subnet_cidr  = cidrsubnet(var.vpc_cidr, 4, 0) # e.g., 172.16.73.0/28
+  private_subnet_cidr = cidrsubnet(var.vpc_cidr, 4, 1) # e.g., 172.16.73.16/28
+}
+
+resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
-  cidr_block              = var.vpc_cidr
+  cidr_block              = local.public_subnet_cidr
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = false
-  tags = merge(local.base_tags, { Name = "lab-${var.lab_id}-subnet" })
+  tags = merge(local.base_tags, { Name = "lab-${var.lab_id}-public" })
+}
+
+resource "aws_subnet" "private" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = local.private_subnet_cidr
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = false
+  tags = merge(local.base_tags, { Name = "lab-${var.lab_id}-private" })
+}
+
+# ---------- IGW + NAT (behind a flag) ----------
+resource "aws_internet_gateway" "this" {
+  count = var.enable_nat ? 1 : 0
+  vpc_id = aws_vpc.this.id
+  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-igw" })
+}
+
+resource "aws_eip" "nat" {
+  count = var.enable_nat ? 1 : 0
+  domain = "vpc"
+  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-nat-eip" })
+}
+
+resource "aws_nat_gateway" "this" {
+  count         = var.enable_nat ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
+  subnet_id     = aws_subnet.public.id
+  tags          = merge(local.base_tags, { Name = "lab-${var.lab_id}-nat" })
+  depends_on    = [aws_internet_gateway.this] # ensure IGW exists first
+}
+
+# ---------- Route tables ----------
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-rt-public" })
+}
+
+resource "aws_route" "public_default" {
+  count                  = var.enable_nat ? 1 : 0
+  route_table_id         = aws_route_table.public.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id             = aws_internet_gateway.this[0].id
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
 
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.this.id
-  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-rt" })
+  tags   = merge(local.base_tags, { Name = "lab-${var.lab_id}-rt-private" })
+}
+
+resource "aws_route" "private_default" {
+  count                  = var.enable_nat ? 1 : 0
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.this[0].id
 }
 
 resource "aws_route_table_association" "private" {
