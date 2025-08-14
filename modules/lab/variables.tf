@@ -1,9 +1,3 @@
-# enable/disable NAT (for cost control)
-variable "enable_nat" {
-  type    = bool
-  default = true
-}
-
 variable "lab_id" {
   type = string
 }
@@ -37,14 +31,15 @@ variable "domain_admin_password" {
   sensitive = true
 }
 
-# Optional override; if null, we reuse domain_admin_password for Windows local/domain Administrator
+# Optional override for Windows local/Domain Administrator password.
+# If null, module reuses domain_admin_password.
 variable "windows_admin_password" {
   type      = string
   default   = null
   sensitive = true
 }
 
-# Password for Ubuntu's 'ubuntu' account (used for xrdp login)
+# Password for Ubuntu 'ubuntu' user to log in via xrdp
 variable "linux_user_password" {
   type      = string
   sensitive = true
@@ -55,9 +50,9 @@ variable "s3_app_bucket" {
   type = string
 }
 
-# Each app = { s3_key = "path/installer.msi|exe|deb|rpm", args = "/qn" }
+# Each app = { s3_key = "path/installer.msi|exe|deb|rpm", args = "/qn" } — max 3
 variable "windows_apps" {
-  type = list(object({ s3_key = string, args = string }))
+  type    = list(object({ s3_key = string, args = string }))
   default = []
   validation {
     condition     = length(var.windows_apps) <= 3
@@ -66,7 +61,7 @@ variable "windows_apps" {
 }
 
 variable "linux_apps" {
-  type = list(object({ s3_key = string, args = string }))
+  type    = list(object({ s3_key = string, args = string }))
   default = []
   validation {
     condition     = length(var.linux_apps) <= 3
@@ -87,25 +82,7 @@ variable "instance_types" {
   }
 }
 
-# expose desktops to the public Internet (demo only!)
-variable "enable_public_desktop_access" {
-  type    = bool
-  default = false
-}
-
-# who can RDP in (strongly recommended to limit this, but wide open for this demo)
-variable "desktop_rdp_cidr" {
-  type    = string
-  default = "0.0.0.0/0" # demo only; override to e.g. "203.0.113.45/32"
-}
-
-# keep IPs stable across stops (optional)
-variable "assign_elastic_ips" {
-  type    = bool
-  default = false
-}
-
-
+# VPC endpoints
 variable "create_interface_endpoints" {
   type    = bool
   default = true
@@ -114,6 +91,24 @@ variable "create_interface_endpoints" {
 variable "create_s3_gateway_endpoint" {
   type    = bool
   default = true
+}
+
+# NAT egress (keeps instances private but allows outbound internet)
+variable "enable_nat" {
+  type    = bool
+  default = true
+}
+
+# Expose RDP via a public NLB (instances stay private)
+variable "enable_nlb_rdp" {
+  type    = bool
+  default = false
+}
+
+# Source CIDR allowed to RDP/xRDP to instances (NLB preserves client source IP)
+variable "admin_cidr" {
+  type    = string
+  default = "0.0.0.0/0" # For POC; set to your /32 for safety
 }
 
 variable "tags" {
