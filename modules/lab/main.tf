@@ -670,6 +670,7 @@ resource "aws_ssm_association" "join_linux" {
 resource "aws_ssm_association" "create_ad_user" {
   count = var.create_domain_user ? 1 : 0
   name  = aws_ssm_document.create_ad_user.name
+  document_version = "$LATEST"   # ensure newest content runs
   targets {
     key    = "InstanceIds"
     values = [aws_instance.dc.id]
