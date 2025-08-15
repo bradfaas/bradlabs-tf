@@ -89,7 +89,7 @@ variable "instance_types" {
     linux_desktop = string
   })
   default = {
-    dc            = "t3.medium"
+    dc            = "t3.large"
     win_desktop   = "t3.large"
     linux_desktop = "t3.large"
   }
