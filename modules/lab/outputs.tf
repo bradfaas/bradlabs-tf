@@ -10,6 +10,16 @@ output "instance_ids" {
     linux = aws_instance.linux.id
   }
 }
+
+output "doc_names" {
+  value = {
+    setup_dc          = aws_ssm_document.setup_dc.name
+    join_domain_win   = aws_ssm_document.join_domain_win.name
+    create_ad_user    = aws_ssm_document.create_ad_user.name
+    join_domain_linux = aws_ssm_document.join_domain_linux.name
+  }
+}
+
 output "nlb_public_ip" {
   description = "Public IPv4 of the NLB (use :3389 for Windows, :3390 for Linux)"
   value       = try(aws_eip.nlb[0].public_ip, null)
