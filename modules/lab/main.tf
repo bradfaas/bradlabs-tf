@@ -435,53 +435,51 @@ resource "aws_ssm_document" "join_domain_linux" {
       AdminPassword = { type = "String" }
     }
     mainSteps = [
-      mainSteps = [
-      {
-        action = "aws:runShellScript"
-        name   = "LinuxJoinAD"
-        inputs = {
-          runCommand = [
-            "set -e",
-            "export DEBIAN_FRONTEND=noninteractive",
+    {
+      action = "aws:runShellScript"
+      name   = "LinuxJoinAD"
+      inputs = {
+        runCommand = [
+          "set -e",
+          "export DEBIAN_FRONTEND=noninteractive",
 
-            # Let cloud-init finish and wait for apt/dpkg locks to clear
-            "cloud-init status --wait || true",
-            "for i in $(seq 1 60); do \
-              if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -x unattended-upgrade >/dev/null \
-                 || [ -e /var/lib/dpkg/lock-frontend ] || [ -e /var/lib/apt/lists/lock ] || [ -e /var/cache/apt/archives/lock ]; then \
-                echo 'apt/dpkg busy; waiting...'; sleep 5; \
-              else break; fi; \
-             done",
-            "sudo dpkg --configure -a || true",
+          # Let cloud-init finish and wait for apt/dpkg locks to clear
+          "cloud-init status --wait || true",
+          "for i in $(seq 1 60); do \
+            if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -x unattended-upgrade >/dev/null \
+               || [ -e /var/lib/dpkg/lock-frontend ] || [ -e /var/lib/apt/lists/lock ] || [ -e /var/cache/apt/archives/lock ]; then \
+              echo 'apt/dpkg busy; waiting...'; sleep 5; \
+            else break; fi; \
+           done",
+          "sudo dpkg --configure -a || true",
 
-            # Packages for AD join
-            "sudo apt-get update",
-            "sudo apt-get install -y realmd sssd sssd-tools adcli packagekit samba-common-bin krb5-user libnss-sss libpam-sss",
+          # Packages for AD join
+          "sudo apt-get update",
+          "sudo apt-get install -y realmd sssd sssd-tools adcli packagekit samba-common-bin krb5-user libnss-sss libpam-sss",
 
-            # Wait until DC answers DNS(53), LDAP(389), and publishes SRV
-            "retry() { n=0; until [ $n -ge 40 ]; do \"$@\" && break; n=$((n+1)); sleep 6; done; }",
-            "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/53'\"",
-            "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/389'\"",
-            "retry host -t SRV _ldap._tcp.dc._msdcs.{{ DomainName }} {{ DcIp }}",
+          # Wait until DC answers DNS(53), LDAP(389), and publishes SRV
+          "retry() { n=0; until [ $n -ge 40 ]; do \"$@\" && break; n=$((n+1)); sleep 6; done; }",
+          "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/53'\"",
+          "retry bash -lc \"timeout 2 bash -c '</dev/tcp/{{ DcIp }}/389'\"",
+          "retry host -t SRV _ldap._tcp.dc._msdcs.{{ DomainName }} {{ DcIp }}",
 
-            # Discover realm and join
-            "echo '{{ AdminPassword }}' | sudo realm join --verbose --user=Administrator {{ DomainName }}",
+          # Discover realm and join
+          "echo '{{ AdminPassword }}' | sudo realm join --verbose --user=Administrator {{ DomainName }}",
 
-            # sssd settings: short names for logins, home dir creation
-            "sudo crudini --set /etc/sssd/sssd.conf 'domain/{{ DomainName }}' use_fully_qualified_names False || (echo -e \"[sssd]\\nservices = nss, pam\\ndomains = {{ DomainName }}\\n\\n[domain/{{ DomainName }}]\\nid_provider = ad\\naccess_provider = ad\\nuse_fully_qualified_names = False\\n\" | sudo tee /etc/sssd/sssd.conf >/dev/null)",
-            "sudo chmod 600 /etc/sssd/sssd.conf",
-            "sudo pam-auth-update --enable mkhomedir || echo 'session required pam_mkhomedir.so skel=/etc/skel/ umask=0022' | sudo tee -a /etc/pam.d/common-session >/dev/null",
+          # sssd settings: short names for logins, home dir creation
+          "sudo crudini --set /etc/sssd/sssd.conf 'domain/{{ DomainName }}' use_fully_qualified_names False || (echo -e \"[sssd]\\nservices = nss, pam\\ndomains = {{ DomainName }}\\n\\n[domain/{{ DomainName }}]\\nid_provider = ad\\naccess_provider = ad\\nuse_fully_qualified_names = False\\n\" | sudo tee /etc/sssd/sssd.conf >/dev/null)",
+          "sudo chmod 600 /etc/sssd/sssd.conf",
+          "sudo pam-auth-update --enable mkhomedir || echo 'session required pam_mkhomedir.so skel=/etc/skel/ umask=0022' | sudo tee -a /etc/pam.d/common-session >/dev/null",
 
-            # Allow Domain Users to log in (you can tighten later)
-            "sudo realm permit -g 'Domain Users' || true",
+          # Allow Domain Users to log in (you can tighten later)
+          "sudo realm permit -g 'Domain Users' || true",
 
-            # Restart services, ensure xrdp picks up pam/sssd
-            "sudo systemctl restart sssd || true",
-            "sudo systemctl restart xrdp || true",
-            # xrdp TLS access (recommended): allow xrdp to read certs
-            "sudo adduser xrdp ssl-cert || true"
-          ]
-        }
+          # Restart services, ensure xrdp picks up pam/sssd
+          "sudo systemctl restart sssd || true",
+          "sudo systemctl restart xrdp || true",
+          # xrdp TLS access (recommended): allow xrdp to read certs
+          "sudo adduser xrdp ssl-cert || true"
+        ]
       }
     ]
   })
