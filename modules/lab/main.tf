@@ -434,54 +434,40 @@ resource "aws_ssm_document" "join_domain_linux" {
       Netbios       = { type = "String" }
       AdminPassword = { type = "String" }
     }
-    mainSteps = [
-    {
+    mainSteps = [{
       action = "aws:runShellScript"
       name   = "LinuxJoinAD"
       inputs = {
         runCommand = [
           "set -e",
           "export DEBIAN_FRONTEND=noninteractive",
-        
-          # Let cloud-init finish, then wait for apt/dpkg locks to clear
           "cloud-init status --wait || true",
           "for i in $(seq 1 60); do if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -x unattended-upgrade >/dev/null || [ -e /var/lib/dpkg/lock-frontend ] || [ -e /var/lib/apt/lists/lock ] || [ -e /var/cache/apt/archives/lock ]; then echo 'apt/dpkg busy; waiting...'; sleep 5; else break; fi; done",
           "sudo dpkg --configure -a || true",
-        
-          # Point DNS to DC (systemd-resolved)
           "if [ -f /etc/systemd/resolved.conf ]; then sudo sed -i '/^DNS=/d;/^Domains=/d' /etc/systemd/resolved.conf; fi",
-          "printf '\\nDNS={{ DcIp }}\\nDomains={{ DomainName }}\\n' | sudo tee -a /etc/systemd/resolved.conf >/dev/null || true",
+          "printf 'DNS={{ DcIp }}\\nDomains={{ DomainName }}\\n' | sudo tee -a /etc/systemd/resolved.conf >/dev/null || true",
           "sudo systemctl restart systemd-resolved || true",
-        
-          # Packages for AD join
           "sudo apt-get update",
           "sudo apt-get install -y realmd sssd sssd-tools adcli packagekit samba-common-bin krb5-user libnss-sss libpam-sss",
-        
-          # Simple retry helper + readiness checks (DNS/LDAP/SRV)
           "retry() { n=0; until [ $n -ge 40 ]; do \"$@\" && break; n=$((n+1)); sleep 6; done; }",
           "retry bash -lc 'echo >/dev/tcp/{{ DcIp }}/53'",
           "retry bash -lc 'echo >/dev/tcp/{{ DcIp }}/389'",
           "retry host -t SRV _ldap._tcp.dc._msdcs.{{ DomainName }} {{ DcIp }}",
-        
-          # Join the realm
           "echo '{{ AdminPassword }}' | sudo realm join --verbose --user=Administrator {{ DomainName }}",
-        
-          # sssd config (short names, home dirs)
           "if ! grep -q '^\\[sssd\\]' /etc/sssd/sssd.conf 2>/dev/null; then echo -e '[sssd]\\nservices = nss, pam\\ndomains = {{ DomainName }}\\n\\n[domain/{{ DomainName }}]\\nid_provider = ad\\naccess_provider = ad\\nuse_fully_qualified_names = False\\n' | sudo tee /etc/sssd/sssd.conf >/dev/null; fi",
           "sudo chmod 600 /etc/sssd/sssd.conf",
           "sudo pam-auth-update --enable mkhomedir || echo 'session required pam_mkhomedir.so skel=/etc/skel/ umask=0022' | sudo tee -a /etc/pam.d/common-session >/dev/null",
-        
-          # Permit Domain Users; restart services
           "sudo realm permit -g 'Domain Users' || true",
           "sudo systemctl restart sssd || true",
           "sudo systemctl restart xrdp || true",
           "sudo adduser xrdp ssl-cert || true"
         ]
       }
-    ]
+    }]
   })
   tags = local.base_tags
 }
+
 
 resource "aws_ssm_document" "create_ad_user" {
   name          = "Lab-${var.lab_id}-CreateAdUser"
