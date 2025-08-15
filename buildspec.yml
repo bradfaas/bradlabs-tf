@@ -66,36 +66,38 @@ phases:
 
           # --- Orchestrate SSM in the correct order ---
           read_json() { jq -r "$1" tf-outputs.json; }
-
+          
           DC_ID=$(read_json '.instance_ids.value.dc')
           WIN_ID=$(read_json '.instance_ids.value.win')
           LINUX_ID=$(read_json '.instance_ids.value.linux')
-
+          
           DOC_SETUP=$(read_json '.doc_names.value.setup_dc')
           DOC_USER=$(read_json '.doc_names.value.create_ad_user')
           DOC_JOIN_WIN=$(read_json '.doc_names.value.join_domain_win')
           DOC_JOIN_LIN=$(read_json '.doc_names.value.join_domain_linux')
-
+          
           DOMAIN="${DOMAIN_NAME:-lab.local}"
           NETBIOS="${NETBIOS_NAME:-LAB}"
           ADMIN_PW="${DOMAIN_ADMIN_PASSWORD}"
           USER_ID="${USER_ID}"
           USER_PW="${DOMAIN_USER_PASSWORD}"
-
+          
           wait_online() {
             local iid="$1"
-            for i in $(seq 1 120); do
-              if aws ssm describe-instance-information \
-                   --filters "Key=InstanceIds,Values=${iid}" \
-                   --query 'InstanceInformationList[0].PingStatus' \
-                   --output text | grep -q Online; then
+            for i in $(seq 1 180); do
+              local ping
+              ping=$(aws ssm describe-instance-information \
+                        --filters "Key=InstanceIds,Values=${iid}" \
+                        --query 'InstanceInformationList[0].PingStatus' \
+                        --output text 2>/dev/null || true)
+              if [[ "$ping" == "Online" ]]; then
                 return 0
               fi
               sleep 10
             done
             echo "Instance $iid did not come Online in time"; return 1
           }
-
+          
           build_params_json() {
             local json="{"
             local first=1
@@ -109,23 +111,31 @@ phases:
             json+="}"
             printf '%s' "$json"
           }
-
+          
           send_and_wait() {
             local doc="$1"; shift
             local iid="$1"; shift
             local params_json; params_json=$(build_params_json "$@")
+          
             local CMD_ID
-            CMD_ID=$(aws ssm send-command \
-              --document-name "$doc" \
-              --targets Key=instanceids,Values="$iid" \
-              --parameters "$params_json" \
-              --query 'Command.CommandId' --output text)
+            if ! CMD_ID=$(aws ssm send-command \
+                  --document-name "$doc" \
+                  --targets Key=instanceids,Values="$iid" \
+                  --parameters "$params_json" \
+                  --query 'Command.CommandId' --output text); then
+              echo "send-command failed for $doc on $iid"; return 1
+            fi
+            if [[ -z "$CMD_ID" || "$CMD_ID" == "None" || "$CMD_ID" == "null" ]]; then
+              echo "send-command did not return a CommandId for $doc on $iid"; return 1
+            fi
             echo "Command $doc -> $iid : $CMD_ID"
+          
             for i in $(seq 1 180); do
+              local STATUS
               STATUS=$(aws ssm get-command-invocation \
                          --command-id "$CMD_ID" \
                          --instance-id "$iid" \
-                         --query 'Status' --output text || true)
+                         --query 'Status' --output text 2>/dev/null || true)
               case "$STATUS" in
                 Success) return 0 ;;
                 Failed|Cancelled|TimedOut)
@@ -133,23 +143,28 @@ phases:
                     --command-id "$CMD_ID" --instance-id "$iid" \
                     --query '{StdOut:StandardOutputContent,StdErr:StandardErrorContent}' \
                     --output json || true
-                  echo "Command $doc failed with status $STATUS"; return 1 ;;
+                  echo "Command $doc failed with status $STATUS"
+                  return 1 ;;
               esac
               sleep 10
             done
             echo "Command $doc did not complete in time"; return 1
           }
-
+          
+          # wait for SSM Online BEFORE promoting the DC
+          echo "Wait for DC SSM Online before promotion…"
+          wait_online "$DC_ID" || exit 1
+          
           echo "1) Promote DC"
           send_and_wait "$DOC_SETUP" "$DC_ID" "AdminPassword=$ADMIN_PW" || exit 1
-
+          
           echo "Wait for DC reboot and SSM Online…"
           sleep 30
           wait_online "$DC_ID" || exit 1
-
+          
           echo "2) Create/enable domain user"
           send_and_wait "$DOC_USER" "$DC_ID" "UserId=$USER_ID" "UserPassword=$USER_PW" || exit 1
-
+          
           echo "3) Join Windows desktop (will reboot)"
           DCIP=$(aws ec2 describe-instances --instance-ids "$DC_ID" \
                   --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
@@ -157,11 +172,12 @@ phases:
           echo "Wait for Windows reboot and Online…"
           sleep 30
           wait_online "$WIN_ID" || exit 1
-
+          
           echo "4) Join Linux desktop"
           send_and_wait "$DOC_JOIN_LIN" "$LINUX_ID" "DcIp=$DCIP" "DomainName=$DOMAIN" "Netbios=$NETBIOS" "AdminPassword=$ADMIN_PW" || exit 1
-
+          
           echo "SSM orchestration complete."
+
         fi
         
       - 'echo "[Build] Final artifact contents:"'
