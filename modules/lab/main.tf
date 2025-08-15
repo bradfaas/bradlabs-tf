@@ -699,7 +699,6 @@ resource "aws_ssm_association" "join_win" {
 resource "aws_ssm_association" "join_linux" {
   name = aws_ssm_document.join_domain_linux.name
   document_version   = "$LATEST"
-  schedule_expression = "rate(5 minutes)"
 
   targets {
     key    = "InstanceIds"
