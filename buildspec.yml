@@ -36,6 +36,7 @@ phases:
         }
         with open("lab.auto.tfvars.json","w") as f: json.dump(out, f)
         PY
+      - jq '{create_domain_user, domain_user_password_len:(.domain_user_password|length)}' lab.auto.tfvars.json || true
       - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
       - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
 
