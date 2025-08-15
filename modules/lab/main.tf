@@ -474,7 +474,7 @@ resource "aws_ssm_document" "create_ad_user" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Create or reset a domain user whose name equals user_id"
+    description   = "Create or reset a domain user = user_id; prints detailed errors"
     parameters    = {
       UserId       = { type = "String" }
       UserPassword = { type = "String" }
@@ -484,21 +484,37 @@ resource "aws_ssm_document" "create_ad_user" {
       name   = "CreateUser"
       inputs = {
         runCommand = [
-          "$ErrorActionPreference='Stop'",
-          "try { Import-Module ActiveDirectory -ErrorAction Stop; 'AD module OK' } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory; 'Installed RSAT-AD-PowerShell' }",
-          "$ok=$false; for($i=0;$i -lt 60 -and -not $ok;$i++){ try{ Get-ADDomain -ErrorAction Stop | Out-Null; $ok=$true } catch { Start-Sleep -Seconds 10 } }",
-          "if(-not $ok){ throw 'AD not ready on DC after waiting' }",
-          "$u='{{ UserId }}'; $pw='{{ UserPassword }}'",
-          "if([string]::IsNullOrWhiteSpace($pw)){ throw 'UserPassword is empty (pipeline not passing it?)' }",
-          "$sec=ConvertTo-SecureString $pw -AsPlainText -Force",
-          "try{ $existing = Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -ErrorAction Stop } catch{ $existing = $null }",
-          "if($existing){ Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec; Enable-ADAccount -Identity $u; Write-Output \"User $u existed; password reset + enabled\" } else { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled $true -PasswordNeverExpires $true; Write-Output \"User $u created\" }"
+          "$ProgressPreference='SilentlyContinue'; $VerbosePreference='Continue'; $ErrorActionPreference='Stop'",
+          "function Fail([string]$msg){ Write-Output (\"ERROR: {0}\" -f $msg); exit 1 }",
+          "Write-Output 'STEP1: Import AD module'",
+          "try { Import-Module ActiveDirectory -ErrorAction Stop } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory }",
+          "Write-Output 'STEP2: Wait for AD to be ready'",
+          "$deadline = (Get-Date).AddMinutes(15)",
+          "while((Get-Date) -lt $deadline){ try { Get-ADDomain -ErrorAction Stop | Out-Null; break } catch { Start-Sleep -Seconds 10 } }",
+          "try { Get-ADDomain -ErrorAction Stop | Out-Null } catch { Fail 'AD not ready after wait' }",
+          "Write-Output 'STEP3: Validate inputs'",
+          "$u = \"{{ UserId }}\"",
+          "$pw = \"{{ UserPassword }}\"",
+          "if([string]::IsNullOrWhiteSpace($u)){ Fail 'UserId is empty' }",
+          "if([string]::IsNullOrWhiteSpace($pw)){ Fail 'UserPassword is empty (not passed from pipeline?)' }",
+          "$sec = ConvertTo-SecureString $pw -AsPlainText -Force",
+          "Write-Output ('INFO: user={0}' -f $u)",
+          "Write-Output 'STEP4: Create or reset user'",
+          "try { $existing = Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -ErrorAction Stop } catch { $existing = $null }",
+          "if($existing){",
+          "  try { Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec -ErrorAction Stop; Enable-ADAccount -Identity $u -ErrorAction Stop; Write-Output ('OK: reset+enabled {0}' -f $u) }",
+          "  catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Reset/Enable failed' }",
+          "} else {",
+          "  try { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled:$true -PasswordNeverExpires:$true -ErrorAction Stop; Write-Output ('OK: created {0}' -f $u) }",
+          "  catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Create failed (likely password complexity)' }",
+          "}"
         ]
       }
     }]
   })
   tags = local.base_tags
 }
+
 
 
 # Install apps on Windows
@@ -671,19 +687,30 @@ resource "aws_ssm_association" "join_linux" {
 }
 
 resource "aws_ssm_association" "create_ad_user" {
-  count = var.create_domain_user ? 1 : 0
-  name  = aws_ssm_document.create_ad_user.name
-  document_version = "$LATEST"   # ensure newest content runs
+  count            = var.create_domain_user ? 1 : 0
+  name             = aws_ssm_document.create_ad_user.name
+  document_version = "$LATEST"
+
   targets {
     key    = "InstanceIds"
     values = [aws_instance.dc.id]
   }
+
   parameters = {
     UserId       = var.user_id
     UserPassword = var.domain_user_password
   }
+
+  # Capture stdout/stderr to S3 so you can read detailed logs
+  output_location {
+    s3_bucket_name = var.s3_app_bucket
+    s3_key_prefix  = "ssm-logs/${var.lab_id}/create-ad-user"
+    s3_region      = var.region
+  }
+
   compliance_severity = "MEDIUM"
 }
+
 
 
 resource "aws_ssm_association" "install_win" {
