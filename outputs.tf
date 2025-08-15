@@ -7,6 +7,8 @@ output "lab_endpoints" {
 }
 
 output "instance_ids" { value = module.lab.instance_ids }
+output "doc_names"    { value = module.lab.doc_names }
+
 output "vpc_id"       { value = module.lab.vpc_id }
 output "subnet_id"    { value = module.lab.subnet_id }
 
