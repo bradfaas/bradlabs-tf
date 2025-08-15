@@ -1,5 +1,6 @@
 version: 0.2
-
+env:
+  shell: bash
 phases:
   install:
     commands:
@@ -43,101 +44,120 @@ phases:
 
   build:
     commands:
-      - set -e
-      - 'echo "PWD: $(pwd)"'
-      - ls -la
-      - terraform init -backend-config="bucket=${STATE_BUCKET}" -backend-config="key=${TF_STATE_KEY}" -backend-config="region=${STATE_REGION}"
       - |
-        if [ "${DESTROY:-false}" = "true" ]; then
-          'echo "[Build] DESTROY=true -> running terraform destroy"'
+        set -euo pipefail
+        echo "[Build] DESTROY=${DESTROY:-false}"
+
+        if [[ "${DESTROY:-false}" == "true" ]]; then
+          echo "[Build] DESTROY=true -> running terraform destroy"
           terraform destroy -auto-approve
-          # Ensure artifact exists even on destroy
           echo '{}' > tf-outputs.json
         else
-          'echo "[Build] Applying lab infrastructure"'
+          echo "[Build] Applying lab infrastructure"
           terraform apply -auto-approve
-          # Write outputs; if there are none (or an intermittent error), still produce a file
           terraform output -json > tf-outputs.json || echo '{}' > tf-outputs.json
-          # === Orchestrate SSM in the correct order ===
-          set -euo pipefail
-          
+
+          # --- Orchestrate SSM in the correct order ---
           read_json() { jq -r "$1" tf-outputs.json; }
-          
+
           DC_ID=$(read_json '.instance_ids.value.dc')
           WIN_ID=$(read_json '.instance_ids.value.win')
           LINUX_ID=$(read_json '.instance_ids.value.linux')
-          
+
           DOC_SETUP=$(read_json '.doc_names.value.setup_dc')
           DOC_USER=$(read_json '.doc_names.value.create_ad_user')
           DOC_JOIN_WIN=$(read_json '.doc_names.value.join_domain_win')
           DOC_JOIN_LIN=$(read_json '.doc_names.value.join_domain_linux')
-          
-          DOMAIN=${DOMAIN_NAME:-"lab.local"}          # if you expose this env
-          NETBIOS=${NETBIOS_NAME:-"LAB"}              # "
+
+          DOMAIN="${DOMAIN_NAME:-lab.local}"
+          NETBIOS="${NETBIOS_NAME:-LAB}"
           ADMIN_PW="${DOMAIN_ADMIN_PASSWORD}"
           USER_ID="${USER_ID}"
           USER_PW="${DOMAIN_USER_PASSWORD}"
-          
-          # helpers
+
           wait_online() {
             local iid="$1"
-            for _ in $(seq 1 120); do
-              if aws ssm describe-instance-information --filters "Key=InstanceIds,Values=${iid}" \
-                --query 'InstanceInformationList[0].PingStatus' --output text | grep -q Online; then
+            for i in $(seq 1 120); do
+              if aws ssm describe-instance-information \
+                   --filters "Key=InstanceIds,Values=${iid}" \
+                   --query 'InstanceInformationList[0].PingStatus' \
+                   --output text | grep -q Online; then
                 return 0
               fi
               sleep 10
             done
-            echo "Instance $iid did not come Online in time"; exit 1
+            echo "Instance $iid did not come Online in time"; return 1
           }
-          
+
+          # Build JSON for --parameters from k=v args; escapes quotes/backslashes
+          build_params_json() {
+            local json="{"
+            local first=1
+            for kv in "$@"; do
+              local k="${kv%%=*}"
+              local v="${kv#*=}"
+              v="${v//\\/\\\\}"; v="${v//\"/\\\"}"
+              if [[ $first -eq 1 ]]; then first=0; else json+=", "; fi
+              json+="\"$k\":[\"$v\"]"
+            done
+            json+="}"
+            printf '%s' "$json"
+          }
+
           send_and_wait() {
             local doc="$1"; shift
             local iid="$1"; shift
-            local params=("$@")
+            local params_json; params_json=$(build_params_json "$@")
             local CMD_ID
             CMD_ID=$(aws ssm send-command \
               --document-name "$doc" \
               --targets Key=instanceids,Values="$iid" \
-              --parameters "${params[@]}" \
+              --parameters "$params_json" \
               --query 'Command.CommandId' --output text)
             echo "Command $doc -> $iid : $CMD_ID"
-            for _ in $(seq 1 180); do
-              STATUS=$(aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$iid" --query 'Status' --output text || true)
+            for i in $(seq 1 180); do
+              STATUS=$(aws ssm get-command-invocation \
+                         --command-id "$CMD_ID" \
+                         --instance-id "$iid" \
+                         --query 'Status' --output text || true)
               case "$STATUS" in
                 Success) return 0 ;;
-                Failed|Cancelled|TimedOut) 
-                  aws ssm get-command-invocation --command-id "$CMD_ID" --instance-id "$iid" \
-                    --query '{StdOut:StandardOutputContent,StdErr:StandardErrorContent}' --output json || true
-                  echo "Command $doc failed with status $STATUS"; exit 1 ;;
+                Failed|Cancelled|TimedOut)
+                  aws ssm get-command-invocation \
+                    --command-id "$CMD_ID" --instance-id "$iid" \
+                    --query '{StdOut:StandardOutputContent,StdErr:StandardErrorContent}' \
+                    --output json || true
+                  echo "Command $doc failed with status $STATUS"; return 1 ;;
               esac
               sleep 10
             done
-            echo "Command $doc did not complete in time"; exit 1
+            echo "Command $doc did not complete in time"; return 1
           }
-          
+
           echo "1) Promote DC"
-          send_and_wait "$DOC_SETUP" "$DC_ID" "AdminPassword=$ADMIN_PW"
-          
+          send_and_wait "$DOC_SETUP" "$DC_ID" "AdminPassword=$ADMIN_PW" || exit 1
+
           echo "Wait for DC reboot and SSM Online…"
           sleep 30
-          wait_online "$DC_ID"
-          
+          wait_online "$DC_ID" || exit 1
+
           echo "2) Create/enable domain user"
-          send_and_wait "$DOC_USER" "$DC_ID" "UserId=$USER_ID" "UserPassword=$USER_PW"
-          
+          send_and_wait "$DOC_USER" "$DC_ID" "UserId=$USER_ID" "UserPassword=$USER_PW" || exit 1
+
           echo "3) Join Windows desktop (will reboot)"
-          send_and_wait "$DOC_JOIN_WIN" "$WIN_ID" "DcIp=$(aws ec2 describe-instances --instance-ids "$DC_ID" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)" "AdminPassword=$ADMIN_PW"
+          DCIP=$(aws ec2 describe-instances --instance-ids "$DC_ID" \
+                  --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)
+          send_and_wait "$DOC_JOIN_WIN" "$WIN_ID" "DcIp=$DCIP" "AdminPassword=$ADMIN_PW" || exit 1
           echo "Wait for Windows reboot and Online…"
           sleep 30
-          wait_online "$WIN_ID"
-          
-          echo "4) Join Linux desktop"
-          send_and_wait "$DOC_JOIN_LIN" "$LINUX_ID" "DcIp=$(aws ec2 describe-instances --instance-ids "$DC_ID" --query 'Reservations[0].Instances[0].PrivateIpAddress' --output text)" "DomainName=$DOMAIN" "Netbios=$NETBIOS" "AdminPassword=$ADMIN_PW"
-          
-          echo "SSM orchestration complete."
+          wait_online "$WIN_ID" || exit 1
 
+          echo "4) Join Linux desktop"
+          send_and_wait "$DOC_JOIN_LIN" "$LINUX_ID" "DcIp=$DCIP" "DomainName=$DOMAIN" "Netbios=$NETBIOS" "AdminPassword=$ADMIN_PW" || exit 1
+
+          echo "SSM orchestration complete."
         fi
+        
       - 'echo "[Build] Final artifact contents:"'
       - ls -la tf-outputs.json
 
