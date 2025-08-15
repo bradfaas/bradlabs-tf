@@ -486,7 +486,7 @@ resource "aws_ssm_document" "create_ad_user" {
       inputs = {
         timeoutSeconds = 1200
         runCommand = [
-          "$ProgressPreference='SilentlyContinue'; $VerbosePreference='Continue'; $ErrorActionPreference='Stop'",
+          "$ProgressPreference='SilentlyContinue'; $VerbosePreference='SilentlyContinue'; $InformationPreference='SilentlyContinue'; $ErrorActionPreference='Stop'",
           "function Fail([string]$m){ Write-Output (\"ERROR: {0}\" -f $m); exit 1 }",
           "Write-Output 'STEP0: Ensure ADWS service is running and port 9389 is open'",
           "$deadline=(Get-Date).AddMinutes(15); while((Get-Date) -lt $deadline){ try{ $svc=Get-Service ADWS -ErrorAction Stop; if($svc.Status -ne 'Running'){ try{ Start-Service ADWS -ErrorAction SilentlyContinue } catch{}; Start-Sleep -Seconds 5 } else { break } } catch { Start-Sleep -Seconds 5 } }",
@@ -494,7 +494,7 @@ resource "aws_ssm_document" "create_ad_user" {
           "$ok=$false; for($i=0;$i -lt 60 -and -not $ok;$i++){ if(Test-NetConnection -ComputerName 'localhost' -Port 9389 -InformationLevel Quiet){ $ok=$true } else { Start-Sleep -Seconds 5 } }",
           "if(-not $ok){ Fail 'ADWS port 9389 not listening' }",
           "Write-Output 'STEP1: Import AD module'",
-          "try { Import-Module ActiveDirectory -ErrorAction Stop } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory }",
+          "try { Import-Module ActiveDirectory -ErrorAction Stop -Verbose:$false } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory -Verbose:$false }",
           "Write-Output 'STEP2: Discover server and verify AD via ADWS'",
           "$domain='${var.domain_name}'; $server=(\"$env:COMPUTERNAME.$domain\")",
           "Write-Output (\"Using server: {0}\" -f $server)",
@@ -509,6 +509,7 @@ resource "aws_ssm_document" "create_ad_user" {
           "try{ $existing = Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -Server $server -ErrorAction Stop } catch{ $existing = $null }",
           "if($existing){ try { Set-ADAccountPassword -Identity $u -Server $server -Reset -NewPassword $sec -ErrorAction Stop; Enable-ADAccount -Identity $u -Server $server -ErrorAction Stop; Write-Output ('OK: reset+enabled {0}' -f $u) } catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Reset/Enable failed' } } else { try { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@' + $domain) -AccountPassword $sec -Enabled:$true -PasswordNeverExpires:$true -Server $server -ErrorAction Stop; Write-Output ('OK: created {0}' -f $u) } catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Create failed (password policy?)' } }"
         ]
+
       }
     }]
   })
