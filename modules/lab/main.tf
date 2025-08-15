@@ -474,39 +474,27 @@ resource "aws_ssm_document" "create_ad_user" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Create domain user equal to user_id with provided password; enable account"
+    description   = "Create/enable a domain user = user_id with provided password"
     parameters    = {
       UserId       = { type = "String" }
       UserPassword = { type = "String" }
     }
-    mainSteps = [
-      {
-        action = "aws:runPowerShellScript"
-        name   = "CreateUser"
-        inputs = {
-          runCommand = [
-            "$ErrorActionPreference = 'Stop'",
-            # Wait for AD to be ready
-            "$ok = $false; for ($i=0; $i -lt 60 -and -not $ok; $i++) { try { Get-ADDomain -ErrorAction Stop | Out-Null; $ok = $true } catch { Start-Sleep -Seconds 10 } }",
-            "if (-not $ok) { throw 'AD not ready on DC' }",
-
-            "$u = '{{ UserId }}'",
-            "$sec = ConvertTo-SecureString '{{ UserPassword }}' -AsPlainText -Force",
-
-            "try { $existing = Get-ADUser -Filter \"(SamAccountName -eq '$u')\" -ErrorAction Stop } catch { $existing = $null }",
-            "if ($existing) {",
-            "  Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec",
-            "  Enable-ADAccount -Identity $u",
-            "  Write-Host \"User $u already existed; password reset + enabled.\"",
-            "} else {",
-            "  New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled $true -PasswordNeverExpires $true",
-            "  Write-Host \"User $u created.\"",
-            "}"
-          ]
-        }
+    mainSteps = [{
+      action = "aws:runPowerShellScript"
+      name   = "CreateUser"
+      inputs = {
+        runCommand = [
+          "$ErrorActionPreference='Stop'; try { Import-Module ActiveDirectory -ErrorAction Stop } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory }",
+          "$ok=$false; for($i=0;$i -lt 60 -and -not $ok;$i++){ try{ Get-ADDomain -ErrorAction Stop | Out-Null; $ok=$true } catch { Start-Sleep -Seconds 10 } }; if(-not $ok){ throw 'AD not ready on DC after waiting' }",
+          "$u='{{ UserId }}'; $pw='{{ UserPassword }}'; if([string]::IsNullOrWhiteSpace($pw)){ throw 'UserPassword is empty' }",
+          "$sec=ConvertTo-SecureString $pw -AsPlainText -Force",
+          "try{ Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -ErrorAction Stop | Out-Null; $exists=$true } catch{ $exists=$false }",
+          "if($exists){ Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec; Enable-ADAccount -Identity $u; Write-Output \"User $u existed; password reset + enabled\" } else { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled $true -PasswordNeverExpires $true; Write-Output \"User $u created\" }"
+        ]
       }
-    ]
+    }]
   })
+
   tags = local.base_tags
 }
 
