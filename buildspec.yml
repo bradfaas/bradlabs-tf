@@ -45,7 +45,10 @@ phases:
   build:
     commands:
       - |
-        set -euo pipefail
+        # Portable safety flags (don’t break if pipefail is unsupported)
+        - set -e
+        - set -u
+        - set -o pipefail 2>/dev/null || true
         echo "[Build] DESTROY=${DESTROY:-false}"
 
         # Always init the backend first
