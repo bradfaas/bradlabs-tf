@@ -435,6 +435,7 @@ resource "aws_ssm_document" "join_domain_linux" {
       AdminPassword = { type = "String" }
     }
     mainSteps = [
+      mainSteps = [
       {
         action = "aws:runShellScript"
         name   = "LinuxJoinAD"
@@ -443,10 +444,15 @@ resource "aws_ssm_document" "join_domain_linux" {
             "set -e",
             "export DEBIAN_FRONTEND=noninteractive",
 
-            # Ensure DNS points at DC (systemd-resolved)
-            "if [ -f /etc/systemd/resolved.conf ]; then sudo sed -i '/^DNS=/d;/^Domains=/d' /etc/systemd/resolved.conf; fi",
-            "printf '\\nDNS={{ DcIp }}\\nDomains={{ DomainName }}\\n' | sudo tee -a /etc/systemd/resolved.conf >/dev/null || true",
-            "sudo systemctl restart systemd-resolved || true",
+            # Let cloud-init finish and wait for apt/dpkg locks to clear
+            "cloud-init status --wait || true",
+            "for i in $(seq 1 60); do \
+              if pgrep -x apt >/dev/null || pgrep -x apt-get >/dev/null || pgrep -x dpkg >/dev/null || pgrep -x unattended-upgrade >/dev/null \
+                 || [ -e /var/lib/dpkg/lock-frontend ] || [ -e /var/lib/apt/lists/lock ] || [ -e /var/cache/apt/archives/lock ]; then \
+                echo 'apt/dpkg busy; waiting...'; sleep 5; \
+              else break; fi; \
+             done",
+            "sudo dpkg --configure -a || true",
 
             # Packages for AD join
             "sudo apt-get update",
