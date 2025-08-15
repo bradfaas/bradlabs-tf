@@ -474,7 +474,7 @@ resource "aws_ssm_document" "create_ad_user" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Create or reset a domain user = user_id; prints detailed errors"
+    description   = "Create or reset a domain user; waits for ADWS and uses explicit -Server"
     parameters    = {
       UserId       = { type = "String" }
       UserPassword = { type = "String" }
@@ -483,35 +483,35 @@ resource "aws_ssm_document" "create_ad_user" {
       action = "aws:runPowerShellScript"
       name   = "CreateUser"
       inputs = {
+        timeoutSeconds = 1200
         runCommand = [
           "$ProgressPreference='SilentlyContinue'; $VerbosePreference='Continue'; $ErrorActionPreference='Stop'",
-          "function Fail([string]$msg){ Write-Output (\"ERROR: {0}\" -f $msg); exit 1 }",
+          "function Fail([string]$m){ Write-Output (\"ERROR: {0}\" -f $m); exit 1 }",
+          "Write-Output 'STEP0: Ensure ADWS service is running and port 9389 is open'",
+          "$deadline=(Get-Date).AddMinutes(15); while((Get-Date) -lt $deadline){ try{ $svc=Get-Service ADWS -ErrorAction Stop; if($svc.Status -ne 'Running'){ try{ Start-Service ADWS -ErrorAction SilentlyContinue } catch{}; Start-Sleep -Seconds 5 } else { break } } catch { Start-Sleep -Seconds 5 } }",
+          "if((Get-Service ADWS -ErrorAction SilentlyContinue).Status -ne 'Running'){ Fail 'ADWS service not running' }",
+          "$ok=$false; for($i=0;$i -lt 60 -and -not $ok;$i++){ if(Test-NetConnection -ComputerName 'localhost' -Port 9389 -InformationLevel Quiet){ $ok=$true } else { Start-Sleep -Seconds 5 } }",
+          "if(-not $ok){ Fail 'ADWS port 9389 not listening' }",
           "Write-Output 'STEP1: Import AD module'",
           "try { Import-Module ActiveDirectory -ErrorAction Stop } catch { Install-WindowsFeature RSAT-AD-PowerShell -IncludeAllSubFeature | Out-Null; Import-Module ActiveDirectory }",
-          "Write-Output 'STEP2: Wait for AD to be ready'",
-          "$deadline = (Get-Date).AddMinutes(15)",
-          "while((Get-Date) -lt $deadline){ try { Get-ADDomain -ErrorAction Stop | Out-Null; break } catch { Start-Sleep -Seconds 10 } }",
-          "try { Get-ADDomain -ErrorAction Stop | Out-Null } catch { Fail 'AD not ready after wait' }",
+          "Write-Output 'STEP2: Discover server and verify AD via ADWS'",
+          "$domain='${var.domain_name}'; $server=(\"$env:COMPUTERNAME.$domain\")",
+          "Write-Output (\"Using server: {0}\" -f $server)",
+          "$ready=$false; for($i=0;$i -lt 60 -and -not $ready;$i++){ try{ Get-ADDomain -Server $server -ErrorAction Stop | Out-Null; $ready=$true } catch { Start-Sleep -Seconds 10 } }",
+          "if(-not $ready){ Fail 'AD not ready via ADWS on server' }",
           "Write-Output 'STEP3: Validate inputs'",
-          "$u = \"{{ UserId }}\"",
-          "$pw = \"{{ UserPassword }}\"",
-          "if([string]::IsNullOrWhiteSpace($u)){ Fail 'UserId is empty' }",
-          "if([string]::IsNullOrWhiteSpace($pw)){ Fail 'UserPassword is empty (not passed from pipeline?)' }",
-          "$sec = ConvertTo-SecureString $pw -AsPlainText -Force",
+          "$u='{{ UserId }}'; $pw='{{ UserPassword }}'; if([string]::IsNullOrWhiteSpace($u)){ Fail 'UserId is empty' }",
+          "if([string]::IsNullOrWhiteSpace($pw)){ Fail 'UserPassword is empty (not passed?)' }",
+          "$sec=ConvertTo-SecureString $pw -AsPlainText -Force",
           "Write-Output ('INFO: user={0}' -f $u)",
-          "Write-Output 'STEP4: Create or reset user'",
-          "try { $existing = Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -ErrorAction Stop } catch { $existing = $null }",
-          "if($existing){",
-          "  try { Set-ADAccountPassword -Identity $u -Reset -NewPassword $sec -ErrorAction Stop; Enable-ADAccount -Identity $u -ErrorAction Stop; Write-Output ('OK: reset+enabled {0}' -f $u) }",
-          "  catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Reset/Enable failed' }",
-          "} else {",
-          "  try { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@${var.domain_name}') -AccountPassword $sec -Enabled:$true -PasswordNeverExpires:$true -ErrorAction Stop; Write-Output ('OK: created {0}' -f $u) }",
-          "  catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Create failed (likely password complexity)' }",
-          "}"
+          "Write-Output 'STEP4: Create or reset user (explicit -Server)'",
+          "try{ $existing = Get-ADUser -LDAPFilter \"(sAMAccountName=$u)\" -Server $server -ErrorAction Stop } catch{ $existing = $null }",
+          "if($existing){ try { Set-ADAccountPassword -Identity $u -Server $server -Reset -NewPassword $sec -ErrorAction Stop; Enable-ADAccount -Identity $u -Server $server -ErrorAction Stop; Write-Output ('OK: reset+enabled {0}' -f $u) } catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Reset/Enable failed' } } else { try { New-ADUser -Name $u -SamAccountName $u -UserPrincipalName ($u + '@' + $domain) -AccountPassword $sec -Enabled:$true -PasswordNeverExpires:$true -Server $server -ErrorAction Stop; Write-Output ('OK: created {0}' -f $u) } catch { $_ | fl * -Force | Out-String | Write-Output; Fail 'Create failed (password policy?)' } }"
         ]
       }
     }]
   })
+
   tags = local.base_tags
 }
 
