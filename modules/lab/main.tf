@@ -510,38 +510,6 @@ resource "aws_ssm_document" "create_ad_user" {
   tags = local.base_tags
 }
 
-# Allow the domain user to RDP to the Windows endpoint
-resource "aws_ssm_document" "grant_rdp_user_win" {
-  name          = "Lab-${var.lab_id}-GrantRdpUserWin"
-  document_type = "Command"
-  content = jsonencode({
-    schemaVersion = "2.2"
-    description   = "Add domain user to local Remote Desktop Users after domain join"
-    parameters    = { Netbios = { type = "String" }, UserId = { type = "String" } }
-    mainSteps = [{
-      action = "aws:runPowerShellScript"
-      name   = "GrantRDP"
-      inputs = {
-        runCommand = [
-          "$ErrorActionPreference='Stop'",
-          "$i=0; while ($i -lt 60) { $cs=Get-CimInstance Win32_ComputerSystem; if ($cs.PartOfDomain) { break } ; Start-Sleep -Seconds 10; $i++ }",
-          "$cs=Get-CimInstance Win32_ComputerSystem; if (-not $cs.PartOfDomain) { throw 'Machine is not domain-joined yet' }",
-          "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
-          "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' | Out-Null",
-          "Set-Service -Name TermService -StartupType Automatic; Start-Service -Name TermService",
-          "$acct='{{ Netbios }}\\{{ UserId }}'",
-          "try { Get-LocalGroup -Name 'Remote Desktop Users' | Out-Null } catch { throw 'Local group Remote Desktop Users not found' }",
-          "$member = Get-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction SilentlyContinue",
-          "if (-not $member) { cmd /c \"net localgroup \\\"Remote Desktop Users\\\" \\\"$acct\\\" /add\" }",
-          "Get-LocalGroupMember -Group 'Remote Desktop Users' | Out-String | Write-Output"
-        ]
-      }
-    }]
-  })
-  tags = local.base_tags
-}
-
-
 # Install apps on Windows
 resource "aws_ssm_document" "install_apps_win" {
   name          = "Lab-${var.lab_id}-InstallAppsWin"
@@ -725,19 +693,6 @@ resource "aws_ssm_association" "create_ad_user" {
   compliance_severity = "MEDIUM"
 }
 
-resource "aws_ssm_association" "grant_rdp_user_win" {
-  count = var.create_domain_user ? 1 : 0
-  name  = aws_ssm_document.grant_rdp_user_win.name
-  targets {
-    key    = "InstanceIds"
-    values = [aws_instance.win.id]
-  }
-  parameters = {
-    Netbios = var.domain_netbios_name
-    UserId  = var.user_id
-  }
-  compliance_severity = "LOW"
-}
 
 resource "aws_ssm_association" "install_win" {
   name = aws_ssm_document.install_apps_win.name
