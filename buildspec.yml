@@ -45,7 +45,6 @@ phases:
   build:
     commands:
       - |
-        # Portable safety flags (don’t break if pipefail is unsupported)
         - set -e
         - set -u
         - set -o pipefail 2>/dev/null || true
