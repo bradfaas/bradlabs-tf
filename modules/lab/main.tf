@@ -344,6 +344,7 @@ resource "aws_ssm_document" "setup_dc" {
             # Promote to new forest (this will reboot automatically)
             "$sec = ConvertTo-SecureString '{{ AdminPassword }}' -AsPlainText -Force",
             "Install-WindowsFeature AD-Domain-Services",
+            "Install-WindowsFeature RSAT-ADDS"
             "Import-Module ADDSDeployment",
             "Install-ADDSForest -DomainName '${var.domain_name}' -InstallDns:$true -SafeModeAdministratorPassword $sec -Force"
           ]
