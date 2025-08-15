@@ -516,29 +516,27 @@ resource "aws_ssm_document" "grant_rdp_user_win" {
   document_type = "Command"
   content = jsonencode({
     schemaVersion = "2.2"
-    description   = "Add domain user to local Remote Desktop Users on Windows desktop"
-    parameters    = {
-      Netbios = { type = "String" }
-      UserId  = { type = "String" }
-    }
-    mainSteps = [
-      {
-        action = "aws:runPowerShellScript"
-        name   = "GrantRDP"
-        inputs = {
-          runCommand = [
-            "$ErrorActionPreference = 'Stop'",
-            # Wait until machine is joined to domain
-            "$ok = $false; for ($i=0; $i -lt 60 -and -not $ok; $i++) { $cs = Get-CimInstance Win32_ComputerSystem; if ($cs.PartOfDomain) { $ok = $true } else { Start-Sleep -Seconds 10 } }",
-            "if (-not $ok) { throw 'Machine not domain-joined yet' }",
-
-            "$acct = '{{ Netbios }}\\{{ UserId }}'",
-            "try { Add-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction Stop } catch { Write-Host $_.Exception.Message }",
-            "Write-Host \"Granted RDP to $acct on this host\""
-          ]
-        }
+    description   = "Add domain user to local Remote Desktop Users after domain join"
+    parameters    = { Netbios = { type = "String" }, UserId = { type = "String" } }
+    mainSteps = [{
+      action = "aws:runPowerShellScript"
+      name   = "GrantRDP"
+      inputs = {
+        runCommand = [
+          "$ErrorActionPreference='Stop'",
+          "$i=0; while ($i -lt 60) { $cs=Get-CimInstance Win32_ComputerSystem; if ($cs.PartOfDomain) { break } ; Start-Sleep -Seconds 10; $i++ }",
+          "$cs=Get-CimInstance Win32_ComputerSystem; if (-not $cs.PartOfDomain) { throw 'Machine is not domain-joined yet' }",
+          "Set-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server' -Name 'fDenyTSConnections' -Value 0",
+          "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' | Out-Null",
+          "Set-Service -Name TermService -StartupType Automatic; Start-Service -Name TermService",
+          "$acct='{{ Netbios }}\\{{ UserId }}'",
+          "try { Get-LocalGroup -Name 'Remote Desktop Users' | Out-Null } catch { throw 'Local group Remote Desktop Users not found' }",
+          "$member = Get-LocalGroupMember -Group 'Remote Desktop Users' -Member $acct -ErrorAction SilentlyContinue",
+          "if (-not $member) { cmd /c \"net localgroup \\\"Remote Desktop Users\\\" \\\"$acct\\\" /add\" }",
+          "Get-LocalGroupMember -Group 'Remote Desktop Users' | Out-String | Write-Output"
+        ]
       }
-    ]
+    }]
   })
   tags = local.base_tags
 }
