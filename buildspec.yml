@@ -12,6 +12,7 @@ phases:
       - if [ -z "${WINDOWS_APPS_JSON:-}" ]; then WINDOWS_APPS_JSON='[]'; fi
       - if [ -z "${LINUX_APPS_JSON:-}" ]; then LINUX_APPS_JSON='[]'; fi
       - if [ -z "${TAGS_JSON:-}" ]; then TAGS_JSON='{"project":"hands-on-lab"}'; fi
+      - echo "Writing lab.auto.tfvars.json"
       - |
         python3 - <<'PY'
         import os, json, sys
@@ -36,7 +37,12 @@ phases:
         }
         with open("lab.auto.tfvars.json","w") as f: json.dump(out, f)
         PY
-      - jq '{create_domain_user, domain_user_password_len:(.domain_user_password|length)}' lab.auto.tfvars.json || true
+      - |
+        python3 - <<'PY'
+        import json
+        d=json.load(open('lab.auto.tfvars.json'))
+        print({"create_domain_user": d.get("create_domain_user"), "domain_user_password_len": len(d.get("domain_user_password",""))})
+        PY
       - export TF_STATE_KEY="labs/${LAB_ID}.tfstate"
       - 'echo "State: s3://${STATE_BUCKET}/${TF_STATE_KEY}"'
 
